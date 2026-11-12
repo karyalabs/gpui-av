@@ -52,6 +52,7 @@ pub(crate) fn read(item: &AVPlayerItem) -> Loaded {
         duration: duration(item_duration),
         ..MediaInfo::default()
     };
+    let mut has_audio = false;
     let mut frame_duration = None;
     let mut sample_track = None;
     let mut undecodable = None;
@@ -68,7 +69,7 @@ pub(crate) fn read(item: &AVPlayerItem) -> Loaded {
             undecodable = Some(codec_name(&track));
         }
         if audio.is_some_and(|audio| *media_type == *audio) {
-            info.has_audio = true;
+            has_audio = true;
         } else if video.is_some_and(|video| *media_type == *video) && !info.has_video {
             info.has_video = true;
             read_video(&track, &mut info);
@@ -81,6 +82,7 @@ pub(crate) fn read(item: &AVPlayerItem) -> Loaded {
             }
         }
     }
+    info.has_audio = Some(has_audio);
     Loaded {
         info,
         frame_duration,
@@ -109,11 +111,12 @@ fn codec_name(track: &AVAssetTrack) -> String {
 fn read_video(track: &AVAssetTrack, info: &mut MediaInfo) {
     // SAFETY: property reads on a loaded track.
     let (natural, transform) = unsafe { (track.naturalSize(), track.preferredTransform()) };
-    info.rotation = rotation(transform);
+    let rotation = rotation(transform);
+    info.rotation = Some(rotation);
     let (width, height) = (natural.width.round().abs(), natural.height.round().abs());
     if width > 0.0 && height > 0.0 {
         let (width, height) = (width as u32, height as u32);
-        info.natural_size = Some(match info.rotation {
+        info.natural_size = Some(match rotation {
             Rotation::Cw90 | Rotation::Cw270 => size(height, width),
             _ => size(width, height),
         });

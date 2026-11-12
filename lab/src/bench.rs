@@ -130,12 +130,12 @@ pub struct Reported {
     pub width: Option<u32>,
     /// Height as shown.
     pub height: Option<u32>,
-    /// Rotation tag in degrees clockwise.
-    pub rotation: u32,
+    /// Rotation tag in degrees clockwise; `None` when unknown.
+    pub rotation: Option<u32>,
     /// Whether there is a video track.
     pub has_video: bool,
-    /// Whether there is an audio track.
-    pub has_audio: bool,
+    /// Whether there is an audio track; `None` when unknown.
+    pub has_audio: Option<bool>,
     /// `limited`, `full`, or `None` when unknown.
     pub color_range: Option<&'static str>,
     /// `bt601`, `bt709`, `bt2020`, or `None` when unknown.
@@ -148,7 +148,7 @@ impl From<&MediaInfo> for Reported {
             duration: info.duration.map(|duration| duration.as_secs_f64()),
             width: info.natural_size.map(|size| size.width),
             height: info.natural_size.map(|size| size.height),
-            rotation: info.rotation.degrees(),
+            rotation: info.rotation.map(|rotation| rotation.degrees()),
             has_video: info.has_video,
             has_audio: info.has_audio,
             color_range: info.color.range.map(|range| match range {
@@ -183,7 +183,7 @@ impl Snapshot {
     /// media without a picture, the backend says it is playing.
     fn started(&self) -> bool {
         self.stats.frames_presented > 0
-            || (self.state == PlaybackState::Playing && self.info.has_audio && !self.info.has_video)
+            || (self.state == PlaybackState::Playing && !self.info.has_video)
     }
 }
 

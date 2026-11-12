@@ -200,7 +200,7 @@ impl Shared {
             natural_size,
             has_video,
             // Media without a picture that still loaded is audio.
-            has_audio: self.has_audio().unwrap_or(!has_video),
+            has_audio: self.has_audio().or((!has_video).then_some(true)),
             ..MediaInfo::default()
         }
     }

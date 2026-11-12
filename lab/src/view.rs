@@ -293,14 +293,20 @@ impl LabView {
                         .map(|size| format!("{}x{}", size.width, size.height)),
                 ),
             ),
-            ("rotation", format!("{}°", info.rotation.degrees())),
+            (
+                "rotation",
+                info.rotation.map_or("unknown".to_string(), |rotation| {
+                    format!("{}°", rotation.degrees())
+                }),
+            ),
             (
                 "tracks",
                 match (info.has_video, info.has_audio) {
-                    (true, true) => "video + audio",
-                    (true, false) => "video",
-                    (false, true) => "audio",
-                    (false, false) => "-",
+                    (true, Some(true)) => "video + audio",
+                    (true, Some(false)) => "video",
+                    (true, None) => "video, audio unknown",
+                    (false, Some(true)) => "audio",
+                    (false, _) => "-",
                 }
                 .to_string(),
             ),

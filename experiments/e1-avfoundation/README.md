@@ -92,9 +92,9 @@ built-in 120 Hz display), muted, release build, 5 s per clip (60 s for the
 ```sh
 scripts/make-clips.sh clips
 cargo run --release -p gpui-av-lab -- --bench corpus/tier-a.json --clips clips --out bench-file.json
-scripts/serve-clips.py clips <token> 8765 &
+scripts/serve.py --port 8765 --token <token> --log clips &
 cargo run --release -p gpui-av-lab -- --bench corpus/tier-a.json \
-    --base-url http://127.0.0.1:8765/ --header "Authorization: Bearer <token>" --out bench-http.json
+    --base-url http://127.0.0.1:8765/private/ --header "Authorization: Bearer <token>" --out bench-http.json
 cargo run --release -p gpui-av-lab -- --soak 600 clips/h264-1920x1080-60fps.mp4 --out soak.json
 ```
 
@@ -118,7 +118,9 @@ cargo run --release -p gpui-av-lab -- --soak 600 clips/h264-1920x1080-60fps.mp4 
 | unsupported-ffv1.mov | failed, Unsupported | – | – | – | – | – | – | – |
 | missing.mp4 | failed, NotFound | – | – | – | – | – | – | – |
 
-**HTTP, with `Authorization` (scripts/serve-clips.py):** 15 of 15 pass.
+**HTTP, with `Authorization`:** 15 of 15 pass. (Run with an earlier
+script, `serve-clips.py`, which asked for the token on every path; it has
+since been folded into `scripts/serve.py`, where `/private/` asks for it.)
 
 | Clip | Outcome | First frame ms | Seek ms | Video fps | Window fps | Dropped % | Max drift ms | CPU % |
 |---|---|---|---|---|---|---|---|---|

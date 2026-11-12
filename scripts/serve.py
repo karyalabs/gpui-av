@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Serves media for gpui-av-lab, on 127.0.0.1 only. Standard library only.
 
-    scripts/serve.py [--port 8090] [--token lab] [--app DIR] FOLDER
+    scripts/serve.py [--port 8090] [--token lab] [--log] [--app DIR] FOLDER
 
   /clips/<file>     a file in FOLDER, with range requests
   /clips/index.json the names of the media files in FOLDER
@@ -10,7 +10,9 @@
   /                 the lab's web build, with --app (scripts/web passes it)
 
 Every answer carries the headers that make a page cross-origin isolated,
-which the lab's web build needs.
+which the lab's web build needs. --log prints one line per request: the
+method, the path, the range, and whether the token came with it, so a
+dropped header shows up at once.
 """
 
 import argparse
@@ -58,13 +60,12 @@ def parse_range(header, size):
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def __init__(self, *args, folder, app, token, **kwargs):
-        self.folder, self.app, self.token = folder, app, token
+    def __init__(self, *args, folder, app, token, log, **kwargs):
+        self.folder, self.app, self.token, self.log = folder, app, token, log
         super().__init__(*args, **kwargs)
 
     def log_message(self, format, *args):
-        if os.environ.get("GPUI_AV_SERVE_LOG"):
-            super().log_message(format, *args)
+        pass
 
     def end_headers(self):
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
@@ -94,8 +95,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
+        authorized = self.headers.get("Authorization") == f"Bearer {self.token}"
+        if self.log:
+            ranged = self.headers.get("Range")
+            print(f"{self.command} {path} range={ranged} token={authorized}", flush=True)
         if path.startswith("/private/"):
-            if self.headers.get("Authorization") != f"Bearer {self.token}":
+            if not authorized:
                 return self.answer(401, b"unauthorized\n", extra=[("WWW-Authenticate", "Bearer")])
             return self.send_file(self.resolve(self.folder, path[len("/private/"):]))
         if path == "/clips/index.json":
@@ -156,11 +161,16 @@ def main():
     parser.add_argument("--port", type=int, default=8090)
     parser.add_argument("--token", default="lab", help="the bearer token /private/ asks for")
     parser.add_argument("--app", help="the lab's web build, served at /")
+    parser.add_argument("--log", action="store_true", help="print a line per request")
     options = parser.parse_args()
     if not os.path.isdir(options.folder):
         sys.exit(f"{options.folder} is not a folder")
     handler = functools.partial(
-        Handler, folder=options.folder, app=options.app, token=options.token
+        Handler,
+        folder=options.folder,
+        app=options.app,
+        token=options.token,
+        log=options.log,
     )
     server = http.server.ThreadingHTTPServer(("127.0.0.1", options.port), handler)
     print(

@@ -323,9 +323,9 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   entry (`lab/src/entry_native.rs`, `entry_web.rs`) and its backend list
   are the only code that differs per platform.
 - **Media info** carries duration, natural size (as shown, rotation
-  applied), the rotation tag, whether there is video and audio, and colour
-  range and matrix as optional values: a backend leaves out what the
-  decoder did not report.
+  applied), whether there is video, and as optional values the rotation
+  tag, whether there is audio, and colour range and matrix: a backend
+  leaves out what its decoder did not report, and never guesses.
 
 ## 5. Experiments
 
@@ -419,8 +419,13 @@ gpuicn controls are stable. It is not the playground.
 ### 5.2 The proof of concept (POC)
 
 Status: agreed 2026-11-12. In progress: the workspace, the API crate, the
-macOS backend, the interactive lab with its test-pattern backend, and the
-bench are in (section 4.2); the web backend is next.
+macOS backend, the interactive lab with its test-pattern backend, the
+bench, and the web backend with the lab's web build are in (section 4.2).
+The web half of the criteria is still to be measured in Chrome on the
+same Mac; so far the web build has only been run in headless Chromium
+without H.264 (VP8 and VP9 clips: playback, the bench in the page, the
+header service worker, a 401, a 404, overlay alignment through resize and
+scroll).
 
 macOS measured 2026-11-12 with the lab's bench (M4 Max, macOS 27.2; tables
 in `experiments/e1-avfoundation`), against the criteria below:
@@ -510,9 +515,11 @@ adjust them, in this file.
    are recorded on macOS. The page cannot read them on the web, so there
    they are noted by hand from Chrome's task manager.
 4. **Correctness.** Every tier A clip plays on both platforms. Reported
-   size, rotation and duration match the manifest on both; colour range
-   and matrix match on macOS, and are reported as unknown on the web,
-   where `<video>` does not expose them.
+   size (as shown, so with the rotation applied) and duration match the
+   manifest on both; the rotation tag, colour range and matrix match on
+   macOS, and are reported as unknown on the web, where `<video>` does
+   not expose them (amended 2026-11-13: the rotation tag joined that
+   list; the rotated size still proves the browser applied it).
 5. **HTTP.** A source with an auth header and range requests plays from a
    local test server on macOS, and a 401 ends in `Failed`. On the web, the
    same source either plays or is refused with a clear error, as settled

@@ -186,7 +186,7 @@ fn backend_events_become_state_and_player_events(cx: &mut TestAppContext) {
         duration: Some(Duration::from_secs(20)),
         natural_size: Some(size(1920, 1080)),
         has_video: true,
-        has_audio: true,
+        has_audio: Some(true),
         ..MediaInfo::default()
     };
     sink.info(info.clone());

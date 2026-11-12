@@ -17,8 +17,8 @@ use std::time::Duration;
 
 use gpui::{App, Corners, RenderImage, Size, Task, Window, size};
 use gpui_av::{
-    Backend, Error, ErrorKind, EventSink, MediaInfo, Placement, PlaybackState, Session, Source,
-    Stats,
+    Backend, Error, ErrorKind, EventSink, MediaInfo, Placement, PlaybackState, Rotation, Session,
+    Source, Stats,
 };
 use image::{Frame, RgbaImage};
 use smallvec::SmallVec;
@@ -53,7 +53,9 @@ impl Backend for TestPatternBackend {
         events.info(MediaInfo {
             duration: Some(pattern.duration),
             natural_size: Some(pattern.size),
+            rotation: Some(Rotation::None),
             has_video: true,
+            has_audio: Some(false),
             ..MediaInfo::default()
         });
         events.state(PlaybackState::Ready);

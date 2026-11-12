@@ -35,3 +35,5 @@ cargo run --release -p gpui-av-lab -- clips/real
 
 The lab plays any file, folder or URL the same way, so your own videos
 work too: `cargo run --release -p gpui-av-lab -- ~/Movies/some-folder`.
+In a browser, `scripts/web serve ~/Movies/some-folder` (or `clips/real`)
+serves the lab with that folder listed.

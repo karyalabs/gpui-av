@@ -42,7 +42,7 @@ class Server(unittest.TestCase):
         with open(os.path.join(cls.app.name, "index.html"), "w") as file:
             file.write("<p>lab</p>")
         handler = functools.partial(
-            serve.Handler, folder=cls.folder.name, app=cls.app.name, token="secret"
+            serve.Handler, folder=cls.folder.name, app=cls.app.name, token="secret", log=False
         )
         cls.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
