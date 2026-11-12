@@ -160,6 +160,11 @@ impl Pattern {
         frame.min(last.saturating_sub(1))
     }
 
+    /// When frame number `frame` starts.
+    fn time_of(&self, frame: u64) -> Duration {
+        Duration::from_secs_f64(frame as f64 / f64::from(self.fps))
+    }
+
     fn render_size(&self) -> Size<u32> {
         let width = self.size.width.min(MAX_RENDER_WIDTH);
         let height = (u64::from(self.size.height) * u64::from(width) / u64::from(self.size.width))
@@ -299,6 +304,9 @@ impl Timeline {
             self.ended = false;
             self.jumped = true;
         }
+        // The window may take a frame or two to start painting again;
+        // that gap is not a dropped frame.
+        self.jumped = true;
         self.playing_since = Some(now);
         Some(Report::State(PlaybackStateKind::Playing))
     }
@@ -410,12 +418,15 @@ impl Session for PatternSession {
 
     fn paint(&mut self, placement: Placement, window: &mut Window, _cx: &mut App) {
         let now = self.now();
-        let (frame, jumped) = {
+        let (position, jumped) = {
             let mut shared = self.shared.borrow_mut();
             shared.advance(now);
-            let frame = self.pattern.frame_at(shared.timeline.position(now));
-            (frame, std::mem::take(&mut shared.timeline.jumped))
+            (
+                shared.timeline.position(now),
+                std::mem::take(&mut shared.timeline.jumped),
+            )
         };
+        let frame = self.pattern.frame_at(position);
         let previous = self.shown.as_ref().map(|(shown, _)| *shown);
         if previous != Some(frame) {
             let image = Arc::new(RenderImage::new(SmallVec::from_elem(
@@ -431,10 +442,13 @@ impl Session for PatternSession {
                 Some(previous) if !jumped && frame > previous => frame - previous - 1,
                 _ => 0,
             };
+            // How late this frame is against the clock it was picked from.
+            let drift = position.saturating_sub(self.pattern.time_of(frame));
             self.stats = Stats::new(
                 self.stats.frames_presented + 1,
                 self.stats.frames_dropped + skipped,
-            );
+            )
+            .with_max_drift(self.stats.max_drift.unwrap_or_default().max(drift));
         }
         if let Some((_, image)) = &self.shown {
             let _ = window.paint_image(

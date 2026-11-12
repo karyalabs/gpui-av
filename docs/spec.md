@@ -243,7 +243,21 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   synthetic picture with `paint_image` against the wall clock, and takes
   sources such as `pattern://1920x1080?fps=60&duration=20`. The only
   platform `cfg` in the lab is the list of backends (`lab/src/backends.rs`).
-  The manifest and `--bench` are the second part.
+- **The bench (L0, second part).** `corpus/tier-a.json` is the manifest of
+  the synthetic tier A corpus that `scripts/make-clips.sh` generates: each
+  clip's size as shown, rotation, frame rate, duration, codecs, colour
+  range and matrix, and whether it must play or fail (and with which error
+  kinds). `gpui-av-lab --bench corpus/tier-a.json` plays every clip in the
+  lab's own window, muted, and writes JSON per clip and backend: outcome,
+  time to first frame, seek time, frames shown and dropped, frame rate,
+  drift, CPU, memory, what the backend reported, and how that compares
+  with the manifest (match, mismatch, or unknown when the backend cannot
+  tell). `--base-url` plays the same corpus over HTTP with `--header`.
+  `--soak <seconds>` loops one clip and samples memory and CPU every five
+  seconds (criterion 3). The process exits 0 only when everything passed.
+- **Drift.** `Stats::max_drift` is the largest gap a session has seen
+  between a frame's timestamp and its clock at the moment the frame was
+  drawn; `None` when the session does not measure it.
 - **macOS (E1).** GPUI's surface takes only full-range NV12 and converts
   with a fixed BT.601 matrix, so the AVFoundation backend asks
   `AVPlayerItemVideoOutput` to convert each frame to exactly that
@@ -319,7 +333,11 @@ container, codec, size, frame rate, colour range, matrix, transfer,
 rotation and duration, so the bench checks correctness as well as speed.
 No video files are committed: synthetic clips come from
 `scripts/make-clips.sh`, and public clips (Blender open films and similar)
-are listed by URL and SHA-256 and fetched by a script. Arya hosts the same
+are listed by URL and SHA-256 and fetched by a script
+(`scripts/fetch-real-clips.sh`). The synthetic clips serve the bench; the
+real films, with real picture and sound, serve people judging smoothness,
+lip sync and colour by eye and ear (Arya, 2026-11-12), and any folder of
+your own videos opens in the lab the same way. Arya hosts the same
 files in Jellyfin.
 
 Both tiers are first-class; tier A is listed first only because it is the
@@ -343,11 +361,28 @@ gpuicn controls are stable. It is not the playground.
 ### 5.2 The proof of concept (POC)
 
 Status: agreed 2026-11-12. In progress: the workspace, the API crate, the
-macOS backend and the interactive lab with its test-pattern backend are in
-(section 4.2); the bench and the web backend are next. First macOS numbers, from E1's example rather than the bench
-(M4 Max, 1080p60 H.264, local file): 0 of 3600 frames dropped in 60 s,
-time to first frame 195 to 240 ms, a seek settles in 85 ms; A/V drift not
-yet measured.
+macOS backend, the interactive lab with its test-pattern backend, and the
+bench are in (section 4.2); the web backend is next.
+
+macOS measured 2026-11-12 with the lab's bench (M4 Max, macOS 27.2; tables
+in `experiments/e1-avfoundation`), against the criteria below:
+1. 1080p60 for 60 s: 0 of about 3,565 frames dropped (file and HTTP); max
+   drift 8 to 17 ms against AVPlayer's clock. Met.
+2. First frame 30 to 80 ms from a local file, 140 ms for the rotated clip
+   (it goes through a video composition) and 190 to 240 ms for the first
+   player in a process; seeks 30 to 95 ms, file or local HTTP. Met.
+3. 10 minute loop of the 1080p60 clip: resident memory +1.1 MB with no
+   trend, CPU 33% of a core (lab window included), 0.82% dropped, all in
+   the first and last 5 s. Met; the web half is open.
+4. All 11 playable tier A clips match the manifest's size, rotation,
+   duration, tracks, colour range and matrix. Met on macOS.
+5. Over local HTTP with a bearer token and range requests every clip
+   plays and every request carries the header; without it every clip ends
+   in `Failed(Unauthorized)`. Met on macOS.
+6. Missing file `NotFound`, truncated and random bytes `Decode`, FFV1
+   `Unsupported`; no panic, no hang. Met on macOS.
+Caveat: runs where macOS throttled a covered lab window drop frames; the
+bench records `window_fps` so they can be told apart.
 
 **What it proves.** The architecture in section 4 works end to end on two
 platforms that share almost nothing underneath: a real `gpui-av` crate

@@ -81,6 +81,94 @@ Correctness (all through the example):
 | MKV | `Failed(Unsupported)` (the E7 gap) |
 | FFV1 in MOV (no decoder) | `Failed(Unsupported)`: "no decoder for the FFV1 track" |
 
+### Bench (2026-11-12, gpui-av-lab)
+
+The lab's `--bench` played the tier A corpus (`corpus/tier-a.json`, from
+`scripts/make-clips.sh`) on the same MacBook Pro (M4 Max, macOS 27.2,
+built-in 120 Hz display), muted, release build, 5 s per clip (60 s for the
+1080p60 clip), then a timed seek. Numbers are from one clean run each;
+"window fps" is how often the lab's window drew.
+
+```sh
+scripts/make-clips.sh clips
+cargo run --release -p gpui-av-lab -- --bench corpus/tier-a.json --clips clips --out bench-file.json
+scripts/serve-clips.py clips <token> 8765 &
+cargo run --release -p gpui-av-lab -- --bench corpus/tier-a.json \
+    --base-url http://127.0.0.1:8765/ --header "Authorization: Bearer <token>" --out bench-http.json
+cargo run --release -p gpui-av-lab -- --soak 600 clips/h264-1920x1080-60fps.mp4 --out soak.json
+```
+
+**Local files:** 15 of 15 pass.
+
+| Clip | Outcome | First frame ms | Seek ms | Video fps | Window fps | Dropped % | Max drift ms | CPU % |
+|---|---|---|---|---|---|---|---|---|
+| h264-1280x720.mp4 | played | 239 | 62 | 29.4 | 120 | 0.0 | 11.4 | 33 |
+| h264-1920x1080.mp4 | played | 76 | 73 | 29.4 | 120 | 0.0 | 6.5 | 33 |
+| h264-1920x1080-60fps.mp4 | played | 74 | 95 | 59.9 | 120 | 0.0 | 7.9 | 36 |
+| h264-720x1280-portrait.mp4 | played | 73 | 69 | 29.4 | 119 | 0.0 | 11.7 | 33 |
+| h264-1280x720-rotate90.mp4 | played | 139 | 70 | 29.6 | 120 | 0.0 | 11.0 | 35 |
+| h264-1280x720.mov | played | 74 | 68 | 29.6 | 120 | 0.0 | 9.0 | 33 |
+| hevc-1920x1080.mp4 | played | 75 | 74 | 29.4 | 120 | 0.0 | 8.9 | 35 |
+| h264-1280x720-vfr.mp4 | played | 68 | 58 | 19.8 | 120 | 0.0 | 8.5 | 32 |
+| h264-1280x720-noaudio.mp4 | played | 32 | 31 | 30.0 | 120 | 0.0 | 9.2 | 33 |
+| aac-audio-only.m4a | played | – | – | – | – | – | – | 4 |
+| h264-1280x720-moov-at-end.mp4 | played | 76 | 67 | 29.6 | 120 | 0.0 | 7.5 | 33 |
+| broken-truncated.mp4 | failed, Decode | – | – | – | – | – | – | – |
+| broken-not-media.mp4 | failed, Decode | – | – | – | – | – | – | – |
+| unsupported-ffv1.mov | failed, Unsupported | – | – | – | – | – | – | – |
+| missing.mp4 | failed, NotFound | – | – | – | – | – | – | – |
+
+**HTTP, with `Authorization` (scripts/serve-clips.py):** 15 of 15 pass.
+
+| Clip | Outcome | First frame ms | Seek ms | Video fps | Window fps | Dropped % | Max drift ms | CPU % |
+|---|---|---|---|---|---|---|---|---|
+| h264-1280x720.mp4 | played | 189 | 73 | 29.4 | 120 | 0.0 | 9.9 | 34 |
+| h264-1920x1080.mp4 | played | 75 | 90 | 29.4 | 120 | 0.0 | 9.4 | 31 |
+| h264-1920x1080-60fps.mp4 | played | 72 | 89 | 59.9 | 120 | 0.0 | 8.5 | 36 |
+| h264-720x1280-portrait.mp4 | played | 65 | 70 | 29.6 | 120 | 0.0 | 11.5 | 32 |
+| h264-1280x720-rotate90.mp4 | played | 139 | 75 | 29.6 | 120 | 0.0 | 10.7 | 35 |
+| h264-1280x720.mov | played | 71 | 65 | 29.6 | 120 | 0.0 | 10.2 | 33 |
+| hevc-1920x1080.mp4 | played | 81 | 71 | 29.6 | 120 | 0.0 | 8.1 | 34 |
+| h264-1280x720-vfr.mp4 | played | 73 | 58 | 19.8 | 120 | 0.0 | 7.3 | 32 |
+| h264-1280x720-noaudio.mp4 | played | 30 | 28 | 30.0 | 120 | 0.0 | 10.9 | 33 |
+| aac-audio-only.m4a | played | – | – | – | – | – | – | 4 |
+| h264-1280x720-moov-at-end.mp4 | played | 53 | 73 | 29.6 | 120 | 0.0 | 5.6 | 34 |
+| broken-truncated.mp4 | failed, Decode | – | – | – | – | – | – | – |
+| broken-not-media.mp4 | failed, Decode | – | – | – | – | – | – | – |
+| unsupported-ffv1.mov | failed, Unsupported | – | – | – | – | – | – | – |
+| missing.mp4 | failed, NotFound | – | – | – | – | – | – | – |
+
+Over HTTP, all 45 requests carried the token and all were range
+requests. Without the header, every clip, the broken ones included, ended
+in `Failed(Unauthorized)` (the server checks the token before the file).
+
+"Max drift" is the largest gap between a frame's item time and the
+player's clock (AVPlayer's clock follows the audio) when the frame was
+taken, ignoring 250 ms after a seek, loop or resume. It includes the
+frame being taken for the next vsync, up to one 120 Hz refresh early.
+The first clip's first frame (190 to 240 ms) includes AVFoundation's
+first use in the process; later clips take 30 to 80 ms. The audio-only
+clip has no frames, so no first frame, rate or seek. The rotated clip
+(140 ms) goes through a video composition. CPU is about a third
+of a core here against a fifth in the play example: the lab redraws its
+stats text with every window frame.
+
+**Soak:** the 1080p60 clip looped for 600 s. Resident memory went from
+112.3 to 113.4 MB (+1.1 MB; range 110.7 to 114.3 MB, no trend). CPU 33%
+of one core. 35,600 frames shown, 295 dropped (0.82%): 258 in the 5 s
+after the window opened and 37 in the last 5 s, none in the 585 s between
+(nine loops). Max drift 15.3 ms. Final state `Playing`.
+
+**Runs that measured the Mac, not the player.** This Mac was in use
+during the runs. When another window covers the lab's, macOS throttles
+the window's drawing: in one run of three clips the window drew at 15
+frames a second and then not at all (two clips timed out); in one full
+HTTP run the 1080p60 clip dropped 35% with the window drawing slower;
+in one file run a clip took 5.7 s to its first frame. Repeated with the
+window in front, each was normal. That is the likeliest explanation for
+the one 30 fps run above too. Bench results now carry `window_fps`, so
+such a run shows for what it is.
+
 ### What it took
 
 1. **GPUI's surface takes one pixel format and one matrix.** The Metal
@@ -136,9 +224,10 @@ Correctness (all through the example):
 - **Added `Session::stats()`** (frames presented and dropped, default
   zero) and `VideoPlayer::stats()`. Nothing else could report drops, and
   the lab's overlay and bench need them.
-- **Stats vanish on failure.** The player drops its session when it
-  fails, so `stats()` reads zero afterwards (a truncated file showed 143
-  frames presented, then 0). The player should keep the last stats.
+- **Stats vanished on failure** (the player dropped its session, and
+  `stats()` read zero). Fixed: the player keeps the last counts.
+- **`Stats::max_drift`** was added for the bench; this backend fills it
+  (see Bench).
 - **A failure found at `open` emits no event**, since the player starts in
   `Failed`. Fine for the API, but every app (the example included) has to
   check `state()` right after creating the player as well as subscribing.
@@ -154,16 +243,11 @@ Correctness (all through the example):
 
 ### Not settled
 
-- **One run at 30 fps.** The first 1080p60 run of the session showed 30
-  frames presented a second and half the frames dropped, from the start.
-  It did not happen again in nine later runs, foreground or background,
-  including the 60 s and 10 minute runs. The window frame counter was
-  added after that run, so it is not known whether GPUI was painting at
-  30 Hz then. Watch for it in the lab.
-- **A/V drift** is not measured: the example has no way to read the audio
-  clock separately. AVPlayer keeps audio and video on one timebase, and
-  frames are picked from that timebase, so drift should be zero, but the
-  lab should measure it.
+- **One run at 30 fps.** Most likely macOS throttling a covered window
+  (see Bench), not the backend; not reproduced on purpose.
+- **Drift is measured against AVPlayer's clock**, which follows the audio
+  device, not by listening; a person should still check lip sync on a
+  real film (`scripts/fetch-real-clips.sh`).
 - **Pixel aspect ratio** is not applied to `natural_size`; no tier A clip
   has non-square pixels.
 - Audio was confirmed by the system's audio assertion for the process, not
@@ -173,9 +257,7 @@ Correctness (all through the example):
 
 - Spec: E1 answered yes; the AVFoundation backend is the macOS backend of
   the POC. Decisions recorded in section 7.
-- The lab (L0) takes this backend as is and measures drift, seek and
-  memory through `--bench`.
+- The lab (L0) took this backend as is; its bench numbers are above.
 - Upstream candidates for GPUI: let `paint_surface` take limited-range and
   BT.709 NV12 (read the buffer's attachments), which would remove the
   conversion pass.
-- Keep the player's last stats after a failure (gpui-av).

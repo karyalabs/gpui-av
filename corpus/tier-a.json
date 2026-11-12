@@ -1,0 +1,193 @@
+{
+  "description": "The synthetic tier A corpus (spec 5.1): what scripts/make-clips.sh generates and what a backend must report for each clip. Sizes are as shown, after rotation. A null fps means variable.",
+  "clips": [
+    {
+      "file": "h264-1280x720.mp4",
+      "container": "mp4",
+      "video_codec": "h264",
+      "audio_codec": "aac",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "duration": 20,
+      "rotation": 0,
+      "color_range": "limited",
+      "color_matrix": "bt709",
+      "expect": "plays"
+    },
+    {
+      "file": "h264-1920x1080.mp4",
+      "container": "mp4",
+      "video_codec": "h264",
+      "audio_codec": "aac",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "duration": 20,
+      "rotation": 0,
+      "color_range": "limited",
+      "color_matrix": "bt709",
+      "expect": "plays"
+    },
+    {
+      "file": "h264-1920x1080-60fps.mp4",
+      "container": "mp4",
+      "video_codec": "h264",
+      "audio_codec": "aac",
+      "width": 1920,
+      "height": 1080,
+      "fps": 60,
+      "duration": 60,
+      "rotation": 0,
+      "color_range": "limited",
+      "color_matrix": "bt709",
+      "expect": "plays",
+      "play_seconds": 60,
+      "note": "The smoothness check: spec 5.2, criterion 1."
+    },
+    {
+      "file": "h264-720x1280-portrait.mp4",
+      "container": "mp4",
+      "video_codec": "h264",
+      "audio_codec": "aac",
+      "width": 720,
+      "height": 1280,
+      "fps": 30,
+      "duration": 10,
+      "rotation": 0,
+      "color_range": "limited",
+      "color_matrix": "bt709",
+      "expect": "plays",
+      "note": "Portrait, stored upright."
+    },
+    {
+      "file": "h264-1280x720-rotate90.mp4",
+      "container": "mp4",
+      "video_codec": "h264",
+      "audio_codec": "aac",
+      "width": 720,
+      "height": 1280,
+      "fps": 30,
+      "duration": 10,
+      "rotation": 90,
+      "color_range": "limited",
+      "color_matrix": "bt709",
+      "expect": "plays",
+      "note": "Stored 1280x720 with a 90 degree rotation tag; shown portrait."
+    },
+    {
+      "file": "h264-1280x720.mov",
+      "container": "mov",
+      "video_codec": "h264",
+      "audio_codec": "aac",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "duration": 10,
+      "rotation": 0,
+      "color_range": "limited",
+      "color_matrix": "bt709",
+      "expect": "plays"
+    },
+    {
+      "file": "hevc-1920x1080.mp4",
+      "container": "mp4",
+      "video_codec": "hevc",
+      "audio_codec": "aac",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "duration": 10,
+      "rotation": 0,
+      "color_range": "limited",
+      "color_matrix": "bt709",
+      "expect": "plays"
+    },
+    {
+      "file": "h264-1280x720-vfr.mp4",
+      "container": "mp4",
+      "video_codec": "h264",
+      "audio_codec": "aac",
+      "width": 1280,
+      "height": 720,
+      "fps": null,
+      "duration": 9.9,
+      "rotation": 0,
+      "color_range": "limited",
+      "color_matrix": "bt709",
+      "expect": "plays",
+      "note": "Variable frame rate, about 20 frames a second on average."
+    },
+    {
+      "file": "h264-1280x720-noaudio.mp4",
+      "container": "mp4",
+      "video_codec": "h264",
+      "audio_codec": null,
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "duration": 10,
+      "rotation": 0,
+      "color_range": "limited",
+      "color_matrix": "bt709",
+      "expect": "plays"
+    },
+    {
+      "file": "aac-audio-only.m4a",
+      "container": "mp4",
+      "video_codec": null,
+      "audio_codec": "aac",
+      "duration": 10,
+      "expect": "plays",
+      "note": "No picture: no size, and no frames to count."
+    },
+    {
+      "file": "h264-1280x720-moov-at-end.mp4",
+      "container": "mp4",
+      "video_codec": "h264",
+      "audio_codec": "aac",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "duration": 10,
+      "rotation": 0,
+      "color_range": "limited",
+      "color_matrix": "bt709",
+      "expect": "plays",
+      "note": "The index is at the end of the file."
+    },
+    {
+      "file": "broken-truncated.mp4",
+      "expect": "fails",
+      "errors": [
+        "Decode"
+      ],
+      "note": "Cut off inside its media data; it may play up to the cut first."
+    },
+    {
+      "file": "broken-not-media.mp4",
+      "expect": "fails",
+      "errors": [
+        "Decode",
+        "Unsupported"
+      ],
+      "note": "Random bytes."
+    },
+    {
+      "file": "unsupported-ffv1.mov",
+      "expect": "fails",
+      "errors": [
+        "Unsupported"
+      ],
+      "note": "FFV1: a codec no platform decoder has."
+    },
+    {
+      "file": "missing.mp4",
+      "expect": "fails",
+      "errors": [
+        "NotFound"
+      ],
+      "note": "Never generated."
+    }
+  ]
+}
