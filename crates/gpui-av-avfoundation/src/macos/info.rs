@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use gpui::size;
 use gpui_av::{ColorInfo, ColorMatrix, ColorRange, MediaInfo, Rotation};
+use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_av_foundation::{AVAssetTrack, AVMediaTypeAudio, AVMediaTypeVideo, AVPlayerItem};
 use objc2_core_foundation::{CFBoolean, CFRetained, CFString, CGAffineTransform};
@@ -16,8 +17,12 @@ use objc2_core_media::{
 /// What the session needs to know about the media beyond [`MediaInfo`].
 pub(crate) struct Loaded {
     pub info: MediaInfo,
-    /// The shortest time between two video frames, for counting drops.
+    /// The shortest time between two video frames, for counting drops
+    /// where the track has no sample cursors.
     pub frame_duration: Option<Duration>,
+    /// The video track, when it can list its samples (local files can),
+    /// so drops are counted against the frames that really exist.
+    pub sample_track: Option<Retained<AVAssetTrack>>,
     /// A track this Mac has no decoder for, by its codec's four-character
     /// code. AVPlayer plays such a track as nothing instead of failing.
     pub undecodable: Option<String>,
@@ -48,6 +53,7 @@ pub(crate) fn read(item: &AVPlayerItem) -> Loaded {
         ..MediaInfo::default()
     };
     let mut frame_duration = None;
+    let mut sample_track = None;
     let mut undecodable = None;
     // SAFETY: constant NSStrings exported by AVFoundation.
     let (video, audio) = unsafe { (AVMediaTypeVideo, AVMediaTypeAudio) };
@@ -69,11 +75,16 @@ pub(crate) fn read(item: &AVPlayerItem) -> Loaded {
             // SAFETY: a property read on a loaded track.
             frame_duration =
                 duration(unsafe { track.minFrameDuration() }).filter(|frame| !frame.is_zero());
+            // SAFETY: a property read on a loaded track.
+            if unsafe { track.canProvideSampleCursors() } {
+                sample_track = Some(track.clone());
+            }
         }
     }
     Loaded {
         info,
         frame_duration,
+        sample_track,
         undecodable,
     }
 }

@@ -16,10 +16,10 @@ use objc2::{AnyThread, MainThreadMarker};
 use objc2_av_foundation::{
     AVPlayer, AVPlayerActionAtItemEnd, AVPlayerItem, AVPlayerItemDidPlayToEndTimeNotification,
     AVPlayerItemFailedToPlayToEndTimeErrorKey, AVPlayerItemFailedToPlayToEndTimeNotification,
-    AVPlayerItemStatus, AVPlayerItemVideoOutput, AVPlayerTimeControlStatus, AVURLAsset,
-    AVVideoColorPrimaries_ITU_R_709_2, AVVideoColorPrimariesKey, AVVideoColorPropertiesKey,
-    AVVideoComposition, AVVideoTransferFunction_ITU_R_709_2, AVVideoTransferFunctionKey,
-    AVVideoYCbCrMatrix_ITU_R_601_4, AVVideoYCbCrMatrixKey,
+    AVPlayerItemStatus, AVPlayerItemVideoOutput, AVPlayerTimeControlStatus, AVSampleCursor,
+    AVURLAsset, AVVideoColorPrimaries_ITU_R_709_2, AVVideoColorPrimariesKey,
+    AVVideoColorPropertiesKey, AVVideoComposition, AVVideoTransferFunction_ITU_R_709_2,
+    AVVideoTransferFunctionKey, AVVideoYCbCrMatrix_ITU_R_601_4, AVVideoYCbCrMatrixKey,
 };
 use objc2_core_foundation::{CFRetained, CFString};
 use objc2_core_media::{CMTime, kCMTimeInvalid, kCMTimeZero};
@@ -46,6 +46,12 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// a picture that has not arrived (the first frame, or the frame after a
 /// seek while paused).
 const FRAME_WAIT: Duration = Duration::from_secs(3);
+
+/// How long after a seek, a loop or a resume drift is not measured.
+const SETTLE: Duration = Duration::from_millis(250);
+
+/// Two sample times this close are the same frame.
+const SAME_FRAME: Duration = Duration::from_millis(1);
 
 pub(crate) struct AvSession {
     inner: Rc<RefCell<Inner>>,
@@ -91,6 +97,13 @@ struct Inner {
     frame: Option<CFRetained<CVPixelBuffer>>,
     /// The presentation time of the frame on screen.
     frame_time: Option<Duration>,
+    /// A cursor on the sample of the frame on screen, for counting the
+    /// samples skipped before the next one.
+    cursor: Option<Retained<AVSampleCursor>>,
+    /// Drift is measured from this moment on: a seek, a loop or a resume
+    /// puts the picture and the clock briefly apart on purpose.
+    drift_from: Option<Instant>,
+    max_drift: Option<Duration>,
     /// Waiting for a new picture since then.
     awaiting_frame: Option<Instant>,
     stats: Stats,
@@ -135,6 +148,9 @@ impl AvSession {
             pending_seek: None,
             frame: None,
             frame_time: None,
+            cursor: None,
+            drift_from: Some(Instant::now() + SETTLE),
+            max_drift: None,
             awaiting_frame: Some(Instant::now()),
             stats: Stats::default(),
         }));
@@ -403,6 +419,8 @@ impl Inner {
         let generation = self.seek.generation.fetch_add(1, Ordering::AcqRel) + 1;
         self.seek.in_flight.store(true, Ordering::Release);
         self.frame_time = None;
+        self.cursor = None;
+        self.drift_from = Some(Instant::now() + SETTLE);
         if self
             .loaded
             .as_ref()
@@ -463,30 +481,80 @@ impl Inner {
         self.count(shown_at);
         self.frame = Some(frame);
         self.frame_time = if seeking { None } else { shown_at };
+        if seeking {
+            self.cursor = None;
+        }
         self.awaiting_frame = None;
     }
 
     fn count(&mut self, shown_at: Option<Duration>) {
         self.stats.frames_presented += 1;
-        let frame_duration = self
-            .loaded
-            .as_ref()
-            .and_then(|loaded| loaded.frame_duration);
-        let (Some(previous), Some(now), Some(frame_duration)) =
-            (self.frame_time, shown_at, frame_duration)
-        else {
-            return;
-        };
         // SAFETY: a plain property read.
         let playing =
             unsafe { self.player.timeControlStatus() } == AVPlayerTimeControlStatus::Playing;
-        if !playing || now <= previous {
+        let Some(now) = shown_at else {
+            self.cursor = None;
             return;
+        };
+        if playing && self.drift_from.is_some_and(|from| Instant::now() >= from) {
+            // SAFETY: a plain property read.
+            let clock = info::duration(unsafe { self.player.currentTime() }).unwrap_or_default();
+            let drift = now.abs_diff(clock);
+            self.max_drift = Some(self.max_drift.map_or(drift, |max| max.max(drift)));
         }
-        let frames = (now - previous).as_secs_f64() / frame_duration.as_secs_f64();
-        let missed = frames.round() as u64;
-        if missed > 1 {
-            self.stats.frames_dropped += missed - 1;
+        match self.frame_time {
+            Some(previous) if playing && now > previous => {
+                self.stats.frames_dropped += self.skipped_between(previous, now);
+            }
+            _ => self.cursor = None,
+        }
+    }
+
+    /// How many frames lie strictly between two shown frames.
+    fn skipped_between(&mut self, previous: Duration, now: Duration) -> u64 {
+        let Some(track) = self
+            .loaded
+            .as_ref()
+            .and_then(|loaded| loaded.sample_track.clone())
+        else {
+            // No sample list: assume a constant frame rate.
+            let Some(frame) = self
+                .loaded
+                .as_ref()
+                .and_then(|loaded| loaded.frame_duration)
+            else {
+                return 0;
+            };
+            let frames = ((now - previous).as_secs_f64() / frame.as_secs_f64()).round() as u64;
+            return frames.saturating_sub(1);
+        };
+        // SAFETY: cursor calls on a loaded track, on the main thread.
+        unsafe {
+            let cursor = match self.cursor.take() {
+                Some(cursor) => cursor,
+                None => match track.makeSampleCursorWithPresentationTimeStamp(cm_time(previous)) {
+                    Some(cursor) => cursor,
+                    None => return 0,
+                },
+            };
+            let mut skipped = 0;
+            // Bounded, in case the times never meet (a damaged index).
+            for _ in 0..10_000 {
+                if cursor.stepInPresentationOrderByCount(1) != 1 {
+                    break;
+                }
+                let Some(at) = info::duration(cursor.presentationTimeStamp()) else {
+                    break;
+                };
+                if at + SAME_FRAME >= now {
+                    break;
+                }
+                if at > previous + SAME_FRAME {
+                    skipped += 1;
+                }
+            }
+            self.cursor = Some(cursor);
+            skipped
         }
     }
 }
@@ -499,6 +567,7 @@ impl Session for AvSession {
             inner.seek_to(Duration::ZERO, false);
         }
         inner.started = true;
+        inner.drift_from = Some(Instant::now() + SETTLE);
         // SAFETY: a plain AVPlayer command.
         unsafe { inner.player.play() };
         inner.poll();
@@ -547,7 +616,11 @@ impl Session for AvSession {
     }
 
     fn stats(&self) -> Stats {
-        self.inner.borrow().stats
+        let inner = self.inner.borrow();
+        match inner.max_drift {
+            Some(drift) => inner.stats.with_max_drift(drift),
+            None => inner.stats,
+        }
     }
 
     fn paint(&mut self, placement: Placement, window: &mut Window, _cx: &mut App) {
