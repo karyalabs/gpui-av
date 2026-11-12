@@ -71,8 +71,12 @@ fn classify(chain: &[Link]) -> ErrorKind {
             _ => {}
         }
         match (link.domain.as_str(), link.code) {
-            // NSURLErrorUserAuthenticationRequired, NSURLErrorUserCancelledAuthentication
-            ("NSURLErrorDomain", -1013 | -1012) => return ErrorKind::Unauthorized,
+            // NSURLErrorUserAuthenticationRequired, NSURLErrorUserCancelledAuthentication,
+            // NSURLErrorNoPermissionsToReadFile (an HTTP 403 after a redirect)
+            ("NSURLErrorDomain", -1013 | -1012 | -1102) => return ErrorKind::Unauthorized,
+            // CoreMedia's HTTP 403 and 404, seen as OSStatus codes.
+            ("NSOSStatusErrorDomain", -12660) => return ErrorKind::Unauthorized,
+            ("NSOSStatusErrorDomain", -12938) => return ErrorKind::NotFound,
             // NSURLErrorFileDoesNotExist
             ("NSURLErrorDomain", -1100) => return ErrorKind::NotFound,
             // NSFileNoSuchFileError, NSFileReadNoSuchFileError

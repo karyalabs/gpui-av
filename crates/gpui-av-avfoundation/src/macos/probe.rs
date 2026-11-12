@@ -6,12 +6,48 @@
 //! the session asks the server once more, for two bytes with the same
 //! headers, and reports by the status it gets.
 
-use block2::RcBlock;
+use block2::{DynBlock, RcBlock};
 use gpui_av::{Error, ErrorKind, EventSink};
+use objc2::rc::Retained;
+use objc2::runtime::{NSObject, ProtocolObject};
+use objc2::{AnyThread, define_class, msg_send};
 use objc2_foundation::{
-    NSData, NSError, NSHTTPURLResponse, NSMutableURLRequest, NSString, NSURL, NSURLResponse,
-    NSURLSession,
+    NSData, NSError, NSHTTPURLResponse, NSMutableURLRequest, NSObjectProtocol, NSString, NSURL,
+    NSURLRequest, NSURLResponse, NSURLSession, NSURLSessionDelegate, NSURLSessionTask,
+    NSURLSessionTaskDelegate,
 };
+
+define_class!(
+    /// Refuses every redirect, so the probe's headers (credentials, often)
+    /// only ever go to the URL the app gave. The probe then sees the 3xx
+    /// itself, which explains nothing, and the original error stands.
+    #[unsafe(super(NSObject))]
+    #[name = "GpuiAvProbeNoRedirects"]
+    struct NoRedirects;
+
+    unsafe impl NSObjectProtocol for NoRedirects {}
+    unsafe impl NSURLSessionDelegate for NoRedirects {}
+    unsafe impl NSURLSessionTaskDelegate for NoRedirects {
+        #[unsafe(method(URLSession:task:willPerformHTTPRedirection:newRequest:completionHandler:))]
+        fn refuse_redirect(
+            &self,
+            _session: &NSURLSession,
+            _task: &NSURLSessionTask,
+            _response: &NSHTTPURLResponse,
+            _request: &NSURLRequest,
+            completion_handler: &DynBlock<dyn Fn(*mut NSURLRequest)>,
+        ) {
+            completion_handler.call((std::ptr::null_mut(),));
+        }
+    }
+);
+
+impl NoRedirects {
+    fn new() -> Retained<Self> {
+        // SAFETY: plain NSObject initialisation of a class with no ivars.
+        unsafe { msg_send![Self::alloc(), init] }
+    }
+}
 
 /// The HTTP source a session plays, kept for the probe.
 #[derive(Clone)]
@@ -60,6 +96,8 @@ pub(crate) fn report(source: &HttpSource, fallback: Error, events: EventSink) {
     let task = unsafe {
         NSURLSession::sharedSession().dataTaskWithRequest_completionHandler(&request, &done)
     };
+    // The task keeps its delegate until it finishes.
+    task.setDelegate(Some(ProtocolObject::from_ref(&*NoRedirects::new())));
     task.resume();
 }
 
