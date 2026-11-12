@@ -50,6 +50,19 @@ pub struct LabView {
     /// Every time the window has drawn this view, for the bench's window
     /// frame rate.
     renders: u64,
+    stage: Stage,
+}
+
+/// How the stage shows the picture. The other two arrangements test a
+/// presenter that draws outside the window's scene.
+#[derive(Clone, Copy, PartialEq)]
+enum Stage {
+    /// The picture fills the stage.
+    Fill,
+    /// The picture sits in a scrolling column, so it can be moved and cut.
+    Scroll,
+    /// The element is gone; the player lives on.
+    Hidden,
 }
 
 /// The clip being played, with what the lab measures about it.
@@ -77,6 +90,7 @@ impl LabView {
             settings,
             playing: None,
             renders: 0,
+            stage: Stage::Fill,
         };
         if autoplay {
             this.open(cx);
@@ -416,6 +430,66 @@ impl LabView {
                     .text_color(rgb(MUTED))
                     .child(format!("volume {:.0}%", settings.volume * 100.)),
             )
+            .child(div().flex_1())
+            .child(self.stage_button("scroll", "Scroll", Stage::Scroll, cx))
+            .child(self.stage_button("hide", "Hide", Stage::Hidden, cx))
+    }
+
+    /// A button that switches the stage to `stage`, and back to filling.
+    fn stage_button(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        stage: Stage,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        button(id, label, self.stage == stage).on_click(cx.listener(
+            move |this, _: &ClickEvent, _, cx| {
+                this.stage = if this.stage == stage {
+                    Stage::Fill
+                } else {
+                    stage
+                };
+                cx.notify();
+            },
+        ))
+    }
+
+    /// The area the picture shows in.
+    fn stage(&self) -> Stateful<Div> {
+        let stage = div().id("stage").flex_1().min_h_0().bg(rgb(0x000000));
+        let Some(player) = self.player() else {
+            return stage;
+        };
+        match self.stage {
+            Stage::Fill => stage.child(video(player).size_full()),
+            Stage::Scroll => {
+                let note = |text: &'static str| {
+                    div()
+                        .h(px(240.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_color(rgb(MUTED))
+                        .child(text)
+                };
+                stage
+                    .overflow_y_scroll()
+                    .child(note("Scroll: the picture moves with this text."))
+                    .child(video(player).w_full().h(px(480.)))
+                    .child(note("The stage's edges cut the picture."))
+                    .child(div().h(px(480.)))
+            }
+            Stage::Hidden => stage.child(
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(rgb(MUTED))
+                    .child("The picture is hidden; the player keeps going."),
+            ),
+        }
     }
 }
 
@@ -436,11 +510,7 @@ impl Render for LabView {
                 playing.meter.idle(presented);
             }
         }
-        let stage = div().flex_1().min_h_0().bg(rgb(0x000000));
-        let stage = match self.player() {
-            Some(player) => stage.child(video(player).size_full()),
-            None => stage,
-        };
+        let stage = self.stage();
         div()
             .size_full()
             .flex()
