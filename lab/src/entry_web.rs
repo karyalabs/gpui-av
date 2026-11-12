@@ -6,7 +6,7 @@
 //! Clip, manifest and base URLs may be relative to the page. An unattended
 //! run leaves its JSON in `window.gpuiAvLab.report` (with `done` and
 //! `passed` beside it); with `out=reports/<name>.json` it also POSTs the
-//! JSON to that URL and offers it as a download.
+//! JSON to that URL, or offers it as a download when no server takes it.
 
 use std::path::Path;
 
@@ -137,8 +137,8 @@ pub fn log(message: &str) {
 
 /// Ends an unattended run: leaves the report on `window.gpuiAvLab`, and
 /// with `out` also POSTs it there (a URL relative to the page, which
-/// `scripts/serve.py` saves under `reports/`) and offers it as a download
-/// of that name.
+/// `scripts/serve.py` saves under `reports/`). When the server does not
+/// take it, the report is offered as a download of that name instead.
 pub fn finish(report: Option<String>, out: Option<&Path>, passed: bool) {
     let Some(window) = web_sys::window() else {
         return;
@@ -158,15 +158,26 @@ pub fn finish(report: Option<String>, out: Option<&Path>, passed: bool) {
     let (Some(json), Some(out)) = (report, out) else {
         return;
     };
-    let init = web_sys::RequestInit::new();
-    init.set_method("POST");
-    init.set_body(&JsValue::from_str(&json));
-    // Nothing waits for the answer: the report is on the page either way.
-    let _ = window.fetch_with_str_and_init(&absolute(&out.to_string_lossy()), &init);
+    let url = absolute(&out.to_string_lossy());
     let name = out
         .file_name()
-        .map_or("gpui-av-lab.json".into(), |name| name.to_string_lossy());
-    let _ = download(&window, &name, &json);
+        .map_or("gpui-av-lab.json".into(), |name| name.to_string_lossy())
+        .into_owned();
+    wasm_bindgen_futures::spawn_local(async move {
+        let init = web_sys::RequestInit::new();
+        init.set_method("POST");
+        init.set_body(&JsValue::from_str(&json));
+        let saved = JsFuture::from(window.fetch_with_str_and_init(&url, &init))
+            .await
+            .ok()
+            .and_then(|response| response.dyn_into::<web_sys::Response>().ok())
+            .is_some_and(|response| response.ok());
+        if saved {
+            log(&format!("the report was saved at {url}"));
+        } else {
+            let _ = download(&window, &name, &json);
+        }
+    });
 }
 
 fn download(window: &web_sys::Window, name: &str, text: &str) -> Result<(), JsValue> {
