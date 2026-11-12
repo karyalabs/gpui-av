@@ -276,9 +276,7 @@ gpuicn controls are stable. It is not the playground.
 
 ### 5.2 The proof of concept (POC)
 
-Status: proposed 2026-11-12. The platforms are decided (macOS and the
-web). The two choices marked *(pending)* are the recommended options and
-wait for Arya's confirmation.
+Status: agreed 2026-11-12. Not started.
 
 **What it proves.** The architecture in section 4 works end to end on two
 platforms that share almost nothing underneath: a real `gpui-av` crate
@@ -304,7 +302,7 @@ coverage: nothing in its API may assume Matty, macOS or AVFoundation.
   The app code that creates the player and the `video()` element is the
   same on both.
 - **Pluggability:** a test-pattern backend that lives in the lab, outside
-  the crate, and uses only the public `Backend` trait *(pending)*. It
+  the crate, and uses only the public `Backend` trait. It
   produces synthetic frames and a clock, and doubles as a test fixture.
 - **Sources:** a file path (macOS), and a URL with request headers and
   range requests. A `<video>` element cannot send custom request headers,
@@ -313,7 +311,7 @@ coverage: nothing in its API may assume Matty, macOS or AVFoundation.
   refuse such a source with a clear error. It never drops headers
   silently. A Jellyfin direct-play URL with its token header plays through
   that same HTTP source; library browsing, filters and Jellyfin metadata as
-  bench expectations follow right after the POC *(pending)*.
+  bench expectations follow right after the POC.
 - **Commands and queries:** `play`, `pause`, `seek`, `set_volume`,
   `set_muted`, `set_looping`; `position`, `duration`, `natural_size`,
   `state`; `object_fit` on the element.
@@ -403,7 +401,10 @@ tier A, and the next milestone is Linux (E2).
 
 - 2026-11-12: the proof of concept (section 5.2) covers macOS and the web
   (Arya). Two platforms with nothing in common underneath are the real
-  test of one API; Linux follows.
+  test of one API; Linux follows. Pluggable backends are proved by a
+  test-pattern backend that lives in the lab and uses only the public
+  trait. Jellyfin in the POC is direct play by URL; the library browser
+  comes right after.
 - 2026-11-12: named `gpui-av` (repo `karyalabs/gpui-av`).
 - 2026-11-12 (E6): write our own backends; borrow from `gpui-video-player`
   (MIT) where useful. The backend API takes request headers from day one
