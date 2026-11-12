@@ -16,6 +16,9 @@ moves into gpuicn (Karya Labs' GPUI component library) as a component, and
 Matty uses it from there. Until then this repo stands alone: no other Karya
 Labs repo depends on it, and nothing here needs Matty or gpuicn to build.
 
+The first thing to build is the proof of concept in section 5.2: two
+platforms (macOS and the web), the real crate, the lab, and numbers.
+
 **Picking up work in a new thread.** Each experiment in section 5 is sized
 for one thread. To start one, give the thread this repo and a prompt like:
 
@@ -201,7 +204,6 @@ question; when it is done, the answer is folded into this spec.
 | E4 | Web: WebCodecs frames drawn inside the canvas without an overlay | One clip plays in Chrome; cost measured against E3 |
 | E5 | Zero-copy on wgpu: implement `PrimitiveBatch::Surfaces` (NV12) in gpui-pre-wgpu | Patch works locally; decide whether to propose it to Zed |
 | E6 | Can we build on gpui-video-player or alhazen instead of writing backends? | **Done 2026-11-12: no; reuse ideas.** See `experiments/e6-existing-crates` |
-
 | E7 | Containers the platform will not open (MKV on AVFoundation and in browsers): our own Rust demuxer feeding VideoToolbox / WebCodecs (Mediabunny on the web), or an optional GStreamer backend on macOS? | The MKV clips in the corpus play on macOS and in Chrome through the chosen path; cost measured |
 | L0 | Build `gpui-av-lab`, the playground and benchmark app (section 5.1) | Interactive mode and `--bench` play the tier A corpus from local and HTTP sources |
 
@@ -210,6 +212,9 @@ Order: E0 and E6 first (cheap, and they can cancel work), then E1 and E3
 and E4, since it reuses their decode paths. L0 starts
 with E1: its first backend is the E1 code, and every later experiment
 reports its numbers through `--bench`.
+
+E1, E3 and that first slice of L0 together make the proof of concept
+(section 5.2), which comes before everything else that is still open.
 
 Test clips come from `scripts/make-clips.sh` (ffmpeg's `testsrc2` and `sine`
 sources) rather than being committed; the repo ignores video files.
@@ -269,6 +274,104 @@ first milestone.
 A full Jellyfin client could be a showcase later, once gpui-av and the
 gpuicn controls are stable. It is not the playground.
 
+### 5.2 The proof of concept (POC)
+
+Status: agreed 2026-11-12. Not started.
+
+**What it proves.** The architecture in section 4 works end to end on two
+platforms that share almost nothing underneath: a real `gpui-av` crate
+plays the tier A corpus through one public API, inside `gpui-av-lab`, on
+macOS and in a browser, with numbers. In experiment terms the POC is E1,
+E3 and the first slice of L0, with the code promoted into the crate instead
+of thrown away. The POC is general-purpose in design and narrow in
+coverage: nothing in its API may assume Matty, macOS or AVFoundation.
+
+**In scope.**
+
+- **Platforms:** macOS and the web (decided 2026-11-12). Chrome is the
+  browser that gates the POC; Safari and Firefox are run and their results
+  recorded, and a failure there is a listed gap, not a blocker. Linux is
+  the next milestone.
+- **Crates:** a Cargo workspace with `gpui-av` (the API: `VideoPlayer`
+  entity, `video()` element, `Source`, the public `Backend` trait,
+  `PlaybackState`, `PlayerEvent`), the AVFoundation and web backends each
+  in their own crate, and `lab/`.
+- **Backends and presenters:** on macOS, `AVPlayer` +
+  `AVPlayerItemVideoOutput`, drawn with `surface()`. On the web, an
+  `HTMLVideoElement` placed as a DOM overlay over the element's bounds.
+  The app code that creates the player and the `video()` element is the
+  same on both.
+- **Pluggability:** a test-pattern backend that lives in the lab, outside
+  the crate, and uses only the public `Backend` trait. It
+  produces synthetic frames and a clock, and doubles as a test fixture.
+- **Sources:** a file path (macOS), and a URL with request headers and
+  range requests. A `<video>` element cannot send custom request headers,
+  so on the web the POC must settle how a source with headers plays (a
+  service worker that adds them is the first candidate) or, failing that,
+  refuse such a source with a clear error. It never drops headers
+  silently. A Jellyfin direct-play URL with its token header plays through
+  that same HTTP source; library browsing, filters and Jellyfin metadata as
+  bench expectations follow right after the POC.
+- **Commands and queries:** `play`, `pause`, `seek`, `set_volume`,
+  `set_muted`, `set_looping`; `position`, `duration`, `natural_size`,
+  `state`; `object_fit` on the element.
+- **Media:** tier A only. MP4 and MOV with H.264 or HEVC and AAC: landscape
+  and portrait, rotation tags, variable frame rate, no audio, audio only,
+  moov at the end and faststart. All clips come from
+  `scripts/make-clips.sh` and are listed in the manifest.
+- **Lab:** the clip list, the player, the stats overlay, the backend
+  switcher, and `--bench` writing JSON per clip and backend. The lab also
+  builds for the web, where the bench runs in the page and offers the same
+  JSON as a download.
+
+**Out of scope.** The Linux backend, WebCodecs frames inside the canvas
+(E4), MKV (E7), tier B, zero-copy on wgpu (E5), `buffered`, audio track and subtitle selection, controls UI, the
+move into gpuicn, publishing to crates.io, and E0 (the POC uses the
+synthetic tier A; E0 refines it later).
+
+**Acceptance criteria.** The POC is done when all of these hold on Arya's
+MacBook Pro, natively and in Chrome on the same machine unless a criterion
+says otherwise, with the numbers taken from the bench and recorded here.
+The thresholds in 1 to 3 are starting guesses; the first measurements may
+adjust them, in this file.
+
+1. **Smooth playback.** A 1080p60 H.264 clip plays for 60 seconds with
+   under 1% dropped frames and A/V drift within 40 ms. On the web, dropped
+   frames come from the browser's own playback-quality counters, and drift
+   is the browser's to keep, so only dropped frames are checked there.
+2. **Responsiveness.** Time to first frame is under 300 ms from a local
+   file on macOS and under 500 ms from the local test server in Chrome; a
+   seek settles on the new frame in under 500 ms on both.
+3. **Stability.** A 10 minute loop shows no memory growth; CPU and memory
+   are recorded on macOS. The page cannot read them on the web, so there
+   they are noted by hand from Chrome's task manager.
+4. **Correctness.** Every tier A clip plays on both platforms. Reported
+   size, rotation and duration match the manifest on both; colour range
+   and matrix match on macOS, and are reported as unknown on the web,
+   where `<video>` does not expose them.
+5. **HTTP.** A source with an auth header and range requests plays from a
+   local test server on macOS, and a 401 ends in `Failed`. On the web, the
+   same source either plays or is refused with a clear error, as settled
+   under Sources above.
+6. **Failure.** A missing file, a truncated file and an unsupported codec
+   each end in `Failed(Error)` on both platforms: no panic, no hang.
+7. **API hygiene.** The `gpui-av` API crate has `#![forbid(unsafe_code)]`
+   and no platform types in its public items; `unsafe` and browser types
+   live only in backend crates.
+8. **Pluggability.** The lab switches between the platform's backend and
+   the test-pattern backend at run time, on both platforms.
+9. **Overlay.** On the web, the video stays aligned with its GPUI element
+   through scroll, window resize and device-pixel-ratio change, and is
+   removed when the element or the player goes away. Known limit, recorded
+   and accepted for the POC: GPUI content cannot draw over the video.
+10. **One app.** The lab's player view is one piece of code with no
+    platform `cfg` in it; only backend selection differs per target.
+11. **CI.** The workspace builds and its tests pass on macOS and for
+    `wasm32-unknown-unknown`, against a pinned gpui-pre snapshot.
+
+When the POC is done, E1 and E3 are marked done, L0 is marked done for
+tier A, and the next milestone is Linux (E2).
+
 ## 6. Risks
 
 - **R1. GPUI churn.** gpui-pre ships a new snapshot about weekly, and the
@@ -296,6 +399,12 @@ gpuicn controls are stable. It is not the playground.
 - 2026-11-12: backends are pluggable and selectable by the app, with a
   default per platform.
 
+- 2026-11-12: the proof of concept (section 5.2) covers macOS and the web
+  (Arya). Two platforms with nothing in common underneath are the real
+  test of one API; Linux follows. Pluggable backends are proved by a
+  test-pattern backend that lives in the lab and uses only the public
+  trait. Jellyfin in the POC is direct play by URL; the library browser
+  comes right after.
 - 2026-11-12: named `gpui-av` (repo `karyalabs/gpui-av`).
 - 2026-11-12 (E6): write our own backends; borrow from `gpui-video-player`
   (MIT) where useful. The backend API takes request headers from day one
