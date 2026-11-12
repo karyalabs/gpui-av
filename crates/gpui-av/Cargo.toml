@@ -1,0 +1,19 @@
+[package]
+name = "gpui-av"
+description = "Audio and video playback for GPUI apps, on the platform's own decoders."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+gpui.workspace = true
+async-channel.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

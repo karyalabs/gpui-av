@@ -1,0 +1,80 @@
+# CI for gpui-av. The process it follows is karyalabs/matty
+# docs/engineering-process.md: shared actions from karyalabs/.github, and
+# one check named `ci` to require.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  runners:
+    runs-on: ubuntu-latest
+    outputs:
+      linux: ${{ steps.pick.outputs.linux }}
+      macos: ${{ steps.pick.outputs.macos }}
+    steps:
+      - id: pick
+        uses: karyalabs/.github/actions/pick-runners@v1
+        with:
+          linux: ${{ vars.KARYA_LINUX_RUNNER }}
+          macos: ${{ vars.KARYA_MACOS_RUNNER }}
+
+  linux:
+    needs: runners
+    runs-on: ${{ fromJSON(needs.runners.outputs.linux) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # A self-hosted runner keeps target/ warm between jobs; the next
+          # step clears the rest.
+          clean: ${{ runner.environment != 'self-hosted' }}
+      - uses: karyalabs/.github/actions/self-hosted-prep@v1
+      - uses: karyalabs/.github/actions/rust-toolchain@v1
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: karyalabs/.github/actions/gpui-deps@v1
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked
+      - run: cargo test --workspace --locked
+      - name: Check for the web
+        run: cargo clippy --workspace --locked --target wasm32-unknown-unknown
+
+  # The AVFoundation backend only builds on macOS. The example compiles
+  # GPUI's shaders at run time, so no Metal toolchain is needed here.
+  macos:
+    needs: runners
+    runs-on: ${{ fromJSON(needs.runners.outputs.macos) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: ${{ runner.environment != 'self-hosted' }}
+      - uses: karyalabs/.github/actions/self-hosted-prep@v1
+      - uses: karyalabs/.github/actions/rust-toolchain@v1
+      - run: cargo clippy --workspace --all-targets --locked
+      - run: cargo test --workspace --locked
+
+  ci:
+    if: always()
+    needs: [linux, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            [[ "$result" == success ]] || { echo "a job ended as $result"; exit 1; }
+          done
