@@ -79,7 +79,7 @@ pub struct ClipResult {
     pub problems: Vec<String>,
     /// From creating the player to its first frame on screen.
     pub time_to_first_frame_ms: Option<f64>,
-    /// From asking for a seek to the middle to the backend reporting the
+    /// From asking for a seek (to the middle, or a quarter in) to the backend reporting the
     /// new frame ready.
     pub seek_ms: Option<f64>,
     /// How long the clip was played and measured for.
@@ -325,8 +325,13 @@ async fn run_one(
             .duration
             .is_some_and(|duration| duration >= Duration::from_secs(2));
     if started && !must_fail && !last.failed() && can_seek {
-        let middle = last.info.duration.unwrap_or_default() / 2;
-        view.update(cx, |view, cx| view.seek_to(middle, cx));
+        let duration = last.info.duration.unwrap_or_default();
+        let position = view.read_with(cx, |view, cx| {
+            view.player()
+                .map_or(Duration::ZERO, |player| player.read(cx).position())
+        });
+        let target = seek_target(duration, position);
+        view.update(cx, |view, cx| view.seek_to(target, cx));
         let (now, finished) = wait_until(view, cx, SEEK_TIMEOUT, |now| {
             now.failed() || now.last_seek.is_some()
         })
@@ -389,6 +394,18 @@ async fn run_one(
         expected: job.expected.clone(),
         checks,
     })
+}
+
+/// Where the timed seek goes: the middle, unless playback is already within
+/// a second of it (a clip measured for half its length is), in which case a
+/// quarter of the way in, so the seek has somewhere to go.
+fn seek_target(duration: Duration, position: Duration) -> Duration {
+    let middle = duration / 2;
+    if position.abs_diff(middle) < Duration::from_secs(1) {
+        duration / 4
+    } else {
+        middle
+    }
 }
 
 /// Everything that makes a result not pass, in words.
@@ -756,6 +773,19 @@ mod tests {
                 "size does not match the manifest",
                 "colour matrix does not match the manifest"
             ]
+        );
+    }
+
+    #[test]
+    fn the_seek_never_targets_where_playback_already_is() {
+        let ten = Duration::from_secs(10);
+        assert_eq!(
+            seek_target(ten, Duration::from_secs(2)),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            seek_target(ten, Duration::from_millis(5020)),
+            Duration::from_millis(2500)
         );
     }
 
