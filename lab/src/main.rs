@@ -14,9 +14,20 @@ mod clips;
 mod test_pattern;
 mod view;
 
-use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
+use gpui::{
+    App, AppContext, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions, actions, px,
+    size,
+};
 
 use crate::view::{LabView, Settings};
+
+actions!(
+    lab,
+    [
+        /// Ends the app (Cmd-Q).
+        Quit
+    ]
+);
 
 const USAGE: &str = "\
 usage: gpui-av-lab [options] [file, folder or URL]...
@@ -102,6 +113,15 @@ fn main() {
     };
 
     gpui_platform::application().run(move |cx: &mut App| {
+        // The lab is one window: closing it, or Cmd-Q, ends the app.
+        cx.on_action(|_: &Quit, cx| cx.quit());
+        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+        cx.on_window_closed(|cx, _| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
         let bounds = Bounds::centered(None, size(px(1280.), px(720.)), cx);
         cx.open_window(
             WindowOptions {
