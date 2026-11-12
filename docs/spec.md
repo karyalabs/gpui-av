@@ -7,6 +7,58 @@ record; change it in the same pull request as the work that changes the plan.
 The name says what it is: audio and video for GPUI. (Zed's own `gpui-media`
 crate is unrelated macOS bindings.)
 
+## 0. Start here
+
+**Where things stand (2026-11-12).** There is no crate yet; only experiments.
+E6 is done (section 5): we write our own backends and borrow ideas from
+`gpui-video-player`. Everything else is open. When gpui-av works, its player
+moves into gpuicn (Karya Labs' GPUI component library) as a component, and
+Matty uses it from there. Until then this repo stands alone: no other Karya
+Labs repo depends on it, and nothing here needs Matty or gpuicn to build.
+
+**Picking up work in a new thread.** Each experiment in section 5 is sized
+for one thread. To start one, give the thread this repo and a prompt like:
+
+> Run experiment E3 from `docs/spec.md` in karyalabs/gpui-av. Read
+> `AGENTS.md` and the spec first. Work on a branch named after the
+> experiment, put code and the write-up in `experiments/e3-<slug>/`, fold
+> the answer into the spec, and open a pull request.
+
+**What a finished experiment looks like.**
+
+- A folder `experiments/<id>-<slug>/` with a README: Question, Setup
+  (machine, OS, GPUI version, clip, how to run), Result (the answer, with
+  numbers), Next (what changes in the spec). `experiments/e6-existing-crates`
+  is the example to copy.
+- Its row in the section 5 table marked done, with the date and a link.
+- Any decision it settles added to section 7.
+
+**Where each experiment can run.**
+
+| Experiment | Needs |
+|---|---|
+| E0 | Access to a real Mattermost server with video attachments (hint: the files search API, `POST /api/v4/teams/{team_id}/files/search`, with terms like `ext:mp4`) |
+| E1 | A Mac (AVFoundation, Metal) |
+| E2 | Linux; a desktop with a GPU gives real numbers, a cloud container only gives CPU numbers |
+| E3, E4 | A browser; Chrome works in a cloud container, Firefox and Safari need a real machine |
+| E5 | Linux with a Vulkan GPU; it patches gpui-pre-wgpu locally |
+| E6 | Done |
+
+Two traps from E6: test clips come from `scripts/make-clips.sh` (needs
+ffmpeg with libx264), and in cloud sessions the sandbox may refuse to build
+or run example code from third-party crates, so read their source instead.
+
+**Terms used below.** *Decoder*: turns compressed video (H.264, HEVC, VP9,
+AV1) into raw frames. *NV12*: the raw frame layout most decoders produce, a
+full-size brightness plane plus a half-size colour plane. *Colour range*:
+whether brightness runs 16 to 235 ("limited", almost all video) or 0 to 255
+("full"); getting it wrong makes video look washed out or crushed.
+*Surface*: GPUI's element that draws a decoder's frame straight from GPU
+memory (macOS only today). *RenderImage*: GPUI's ordinary image, which
+needs a CPU conversion and upload for every frame. *Zero-copy*: the frame
+goes from decoder to screen without the CPU touching its pixels.
+*A/V sync*: showing each frame when its timestamp matches the audio clock.
+
 ## 1. Why this exists
 
 GPUI has no video player. Matty (a Mattermost client on GPUI) needs one for
