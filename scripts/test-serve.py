@@ -35,6 +35,7 @@ class Server(unittest.TestCase):
     def setUpClass(cls):
         cls.folder = tempfile.TemporaryDirectory()
         cls.app = tempfile.TemporaryDirectory()
+        cls.reports = tempfile.TemporaryDirectory()
         with open(os.path.join(cls.folder.name, "clip.mp4"), "wb") as file:
             file.write(bytes(range(256)) * 4)
         with open(os.path.join(cls.folder.name, "notes.txt"), "w") as file:
@@ -42,7 +43,12 @@ class Server(unittest.TestCase):
         with open(os.path.join(cls.app.name, "index.html"), "w") as file:
             file.write("<p>lab</p>")
         handler = functools.partial(
-            serve.Handler, folder=cls.folder.name, app=cls.app.name, token="secret", log=False
+            serve.Handler,
+            folder=cls.folder.name,
+            app=cls.app.name,
+            token="secret",
+            log=False,
+            reports=cls.reports.name,
         )
         cls.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
@@ -53,6 +59,7 @@ class Server(unittest.TestCase):
         cls.server.server_close()
         cls.folder.cleanup()
         cls.app.cleanup()
+        cls.reports.cleanup()
 
     def get(self, path, headers=None):
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port)
@@ -101,6 +108,23 @@ class Server(unittest.TestCase):
         self.assertEqual(self.get("/clips/missing.mp4")[0].status, 404)
         self.assertEqual(self.get("/clips/../serve.py")[0].status, 404)
         self.assertEqual(self.get("/clips/%2e%2e/%2e%2e/etc/passwd")[0].status, 404)
+
+    def post(self, path, body):
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port)
+        connection.request("POST", path, body=body)
+        response = connection.getresponse()
+        response.read()
+        connection.close()
+        return response.status
+
+    def test_a_posted_report_is_saved_by_its_plain_name(self):
+        self.assertEqual(self.post("/reports/bench.json", b'{"passed": 1}'), 201)
+        with open(os.path.join(self.reports.name, "bench.json"), "rb") as file:
+            self.assertEqual(file.read(), b'{"passed": 1}')
+        self.assertEqual(self.post("/reports/../escape.json", b"{}"), 404)
+        self.assertEqual(self.post("/reports/.hidden", b"{}"), 404)
+        self.assertEqual(self.post("/clips/clip.mp4", b"{}"), 404)
+        self.assertEqual(os.listdir(self.reports.name), ["bench.json"])
 
     def test_the_app_is_served_at_the_root(self):
         response, body = self.get("/")

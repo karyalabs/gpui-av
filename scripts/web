@@ -8,7 +8,8 @@
 # `serve` also serves the media in `folder` (default: clips) under /clips/,
 # and the lab lists it: point it at a folder of your own videos to play
 # them. The same media is under /private/ for requests that carry
-# "Authorization: Bearer <token>" (default token: lab).
+# "Authorization: Bearer <token>" (default token: lab). A bench run in the
+# page with ?out=reports/<name>.json is saved to target/web/reports/.
 #
 # Environment: GPUI_AV_WEB_PORT (default 8090), GPUI_AV_WEB_TOKEN,
 # GPUI_AV_WEB_RUSTFLAGS (more compiler flags for the build).
@@ -74,7 +75,7 @@ serve() {
         shift
     fi
     build ${dev[@]+"${dev[@]}"}
-    exec python3 scripts/serve.py --app "$dist" \
+    exec python3 scripts/serve.py --app "$dist" --reports "$target_dir/reports" \
         --port "${GPUI_AV_WEB_PORT:-8090}" --token "${GPUI_AV_WEB_TOKEN:-lab}" "${1:-clips}"
 }
 
@@ -83,7 +84,7 @@ case "${1:-}" in
     build) shift; build "$@" ;;
     serve) shift; serve "$@" ;;
     *)
-        sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
         exit 2
         ;;
 esac

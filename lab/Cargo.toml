@@ -38,6 +38,7 @@ web-sys = { workspace = true, features = [
     "HtmlAnchorElement",
     "HtmlElement",
     "Location",
+    "RequestInit",
     "Response",
     "Url",
     "UrlSearchParams",

@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Serves media for gpui-av-lab, on 127.0.0.1 only. Standard library only.
 
-    scripts/serve.py [--port 8090] [--token lab] [--log] [--app DIR] FOLDER
+    scripts/serve.py [--port 8090] [--token lab] [--log] [--app DIR]
+                     [--reports DIR] FOLDER
 
   /clips/<file>     a file in FOLDER, with range requests
   /clips/index.json the names of the media files in FOLDER
   /private/<file>   the same files, for requests that carry
                     "Authorization: Bearer <token>"; 401 without
   /                 the lab's web build, with --app (scripts/web passes it)
+  /reports/<name>   with --reports: a POST saves its body as DIR/<name>,
+                    which is how the lab in a page hands over a bench report
 
 Every answer carries the headers that make a page cross-origin isolated,
 which the lab's web build needs. --log prints one line per request: the
@@ -37,6 +40,8 @@ TYPES = {
     ".mkv": "video/x-matroska",
 }
 RANGE = re.compile(r"bytes=(\d*)-(\d*)$")
+# The largest report a page may hand over.
+MAX_REPORT = 16 * 1024 * 1024
 
 
 def parse_range(header, size):
@@ -60,8 +65,9 @@ def parse_range(header, size):
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def __init__(self, *args, folder, app, token, log, **kwargs):
+    def __init__(self, *args, folder, app, token, log, reports=None, **kwargs):
         self.folder, self.app, self.token, self.log = folder, app, token, log
+        self.reports = reports
         super().__init__(*args, **kwargs)
 
     def log_message(self, format, *args):
@@ -92,6 +98,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_HEAD(self):
         self.do_GET()
+
+    def do_POST(self):
+        path = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
+        name = path[len("/reports/"):] if path.startswith("/reports/") else ""
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if 0 < length <= MAX_REPORT else b""
+        # Only a plain file name, and only where --reports said.
+        plain = name and name == os.path.basename(name) and not name.startswith(".")
+        if not self.reports or not plain or not body:
+            return self.answer(404, b"not found\n")
+        os.makedirs(self.reports, exist_ok=True)
+        with open(os.path.join(self.reports, name), "wb") as file:
+            file.write(body)
+        print(f"saved {os.path.join(self.reports, name)}", flush=True)
+        self.answer(201, b"saved\n")
 
     def do_GET(self):
         path = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
@@ -162,6 +183,7 @@ def main():
     parser.add_argument("--token", default="lab", help="the bearer token /private/ asks for")
     parser.add_argument("--app", help="the lab's web build, served at /")
     parser.add_argument("--log", action="store_true", help="print a line per request")
+    parser.add_argument("--reports", help="save what is POSTed to /reports/<name> here")
     options = parser.parse_args()
     if not os.path.isdir(options.folder):
         sys.exit(f"{options.folder} is not a folder")
@@ -171,6 +193,7 @@ def main():
         app=options.app,
         token=options.token,
         log=options.log,
+        reports=options.reports,
     )
     server = http.server.ThreadingHTTPServer(("127.0.0.1", options.port), handler)
     print(
