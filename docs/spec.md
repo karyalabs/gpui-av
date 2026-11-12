@@ -43,6 +43,8 @@ for one thread. To start one, give the thread this repo and a prompt like:
 | E3, E4 | A browser; Chrome works in a cloud container, Firefox and Safari need a real machine |
 | E5 | Linux with a Vulkan GPU; it patches gpui-pre-wgpu locally |
 | E6 | Done |
+| E7 | A Mac and Chrome; MKV clips from the corpus |
+| L0 | Any desktop for the app; a Jellyfin server for that source (optional) |
 
 Two traps from E6: test clips come from `scripts/make-clips.sh` (needs
 ffmpeg with libx264), and in cloud sessions the sandbox may refuse to build
@@ -61,9 +63,11 @@ goes from decoder to screen without the CPU touching its pixels.
 
 ## 1. Why this exists
 
-GPUI has no video player. Matty (a Mattermost client on GPUI) needs one for
-video attachments, and every other GPUI app that shows media hits the same
-wall. The crates that exist today are thin and each is locked to one old GPUI
+GPUI has no video player, and every GPUI app that shows media hits the same
+wall. gpui-av is meant to be the general-purpose answer: whatever media an
+app wants to play, not one app's needs. Matty (a Mattermost client on GPUI)
+is the first user, because it needs video attachments, but it does not set
+the limits of the crate. The crates that exist today are thin and each is locked to one old GPUI
 snapshot (section 3.3).
 
 The goal is a media layer for GPUI that feels like it belongs there: one typed
@@ -74,8 +78,11 @@ GPU with as little copying as each platform allows.
 
 Goals, in order:
 
-1. Play a video attachment in Matty on macOS, Linux and the web: play, pause,
-   seek, volume, mute, loop, with sound and picture in sync.
+1. Play the media people actually have, on macOS, Linux and the web: common
+   containers (MP4, MOV, WebM, MKV) and codecs (H.264, HEVC, VP9, AV1),
+   short clips and long films, with play, pause, seek, volume, mute and
+   loop, and sound and picture in sync. The first milestone is Matty's
+   video attachments.
 2. A small public API that does not leak platform types and has no `unsafe`
    in it.
 3. Measure everything. Every claim about smoothness, CPU, memory or battery
@@ -141,13 +148,18 @@ of them is a valid outcome of the experiments.
 ```
 
 - **Backend.** Opens a source (file path or URL with auth headers), owns
-  decode, audio output and the clock, and reports state. Backends:
+  decode, audio output and the clock, and reports state. Backends are
+  pluggable: each platform has a default, and an app can pick another one
+  (or bring its own) through the public `Backend` trait, without platform
+  types or `unsafe` in that trait. Backends:
   - macOS: `AVPlayer` + `AVPlayerItemVideoOutput`, giving `CVPixelBuffer`s.
   - Linux: GStreamer `playbin` with an `appsink`, loaded at run time so the
     app still starts without GStreamer; without it, fall back to opening the
     file in the system player.
   - Web: an `HTMLVideoElement`. Later, WebCodecs `VideoDecoder` plus a Rust
-    MP4 demuxer for frames inside the canvas.
+    MP4 demuxer for frames inside the canvas. Mediabunny (a demuxer and
+    WebCodecs wrapper) is a candidate for that later web backend; not
+    looked at yet.
 - **Presenter.** Picks the cheapest path the platform has: `surface` on
   macOS; `RenderImage` on Linux; a DOM `<video>` placed over the element's
   bounds on the web (first cut; menus cannot draw over it). Zero-copy
@@ -190,11 +202,72 @@ question; when it is done, the answer is folded into this spec.
 | E5 | Zero-copy on wgpu: implement `PrimitiveBatch::Surfaces` (NV12) in gpui-pre-wgpu | Patch works locally; decide whether to propose it to Zed |
 | E6 | Can we build on gpui-video-player or alhazen instead of writing backends? | **Done 2026-11-12: no; reuse ideas.** See `experiments/e6-existing-crates` |
 
+| E7 | Containers the platform will not open (MKV on AVFoundation and in browsers): our own Rust demuxer feeding VideoToolbox / WebCodecs (Mediabunny on the web), or an optional GStreamer backend on macOS? | The MKV clips in the corpus play on macOS and in Chrome through the chosen path; cost measured |
+| L0 | Build `gpui-av-lab`, the playground and benchmark app (section 5.1) | Interactive mode and `--bench` play the tier A corpus from local and HTTP sources |
+
 Order: E0 and E6 first (cheap, and they can cancel work), then E1 and E3
-(the two biggest user groups after the web), then E2, E4 and E5.
+(the two biggest user groups after the web), then E2, E4 and E5. E7 follows E1
+and E4, since it reuses their decode paths. L0 starts
+with E1: its first backend is the E1 code, and every later experiment
+reports its numbers through `--bench`.
 
 Test clips come from `scripts/make-clips.sh` (ffmpeg's `testsrc2` and `sine`
 sources) rather than being committed; the repo ignores video files.
+
+### 5.1 The playground: `gpui-av-lab`
+
+One app in this repo (`lab/`) is where gpui-av gets tried and measured.
+Because gpui-av is general purpose, the lab tests the whole range of media
+people have, not only Matty's. It is still a test bench, not a product: no
+home screens, posters, resume or watch history. Features that belong in the
+crate (audio track and subtitle selection, when they arrive) do get a plain
+picker in the lab so they can be tested.
+
+- **Interactive mode.** A clip list, the player, and a stats overlay:
+  backend, presenter, fps, dropped frames, A/V drift, colour range and
+  matrix. The backend can be switched at run time, which also exercises the
+  pluggable `Backend` trait.
+- **`--bench` mode.** Plays a list of clips without a person and writes JSON
+  per clip and backend: time to first frame, seek time, CPU, memory, dropped
+  frames, A/V drift, and whether the reported metadata matched the
+  manifest. Experiment READMEs quote these numbers.
+- **Sources** are pluggable too: a local folder; plain HTTP with request
+  headers (the Matty case: authenticated file URLs with range requests);
+  and a Jellyfin server, which is a first-class source and the main home
+  of the large corpus. The lab lists a Jellyfin library with filters by
+  container, codec, resolution and HDR, taken from the metadata Jellyfin
+  already probed for each file; that metadata also serves as the expected
+  values for the bench, so the large corpus needs no hand-written manifest.
+  Jellyfin is only used for direct play (`/Videos/{id}/stream?static=true`
+  with its token header), and the test user has transcoding and remuxing
+  turned off, so a failure shows our decoder coverage instead of being
+  hidden by the server. HLS stays a non-goal for now.
+
+**Corpus.** A manifest (in the repo) lists every clip with its expected
+container, codec, size, frame rate, colour range, matrix, transfer,
+rotation and duration, so the bench checks correctness as well as speed.
+No video files are committed: synthetic clips come from
+`scripts/make-clips.sh`, and public clips (Blender open films and similar)
+are listed by URL and SHA-256 and fetched by a script. Arya hosts the same
+files in Jellyfin.
+
+Both tiers are first-class; tier A is listed first only because it is the
+first milestone.
+
+- **Tier A, Matty-like (first milestone).** Short MP4 and MOV from
+  phones and screen recorders: H.264 and HEVC, portrait and rotation tags,
+  variable frame rate, no audio, audio only, moov at the end vs faststart.
+  E0 refines this tier from real attachments.
+- **Tier B, coverage.** VP9 and AV1 (WebM and MP4), 4K and 60 fps, 10-bit,
+  HDR10 and HLG, full range, BT.601/709/2020, odd sizes, non-square pixels,
+  fragmented MP4, MKV, several audio tracks and 5.1, long files for seeking,
+  truncated and corrupt files. A clip that fails on a backend is a coverage
+  gap to close, not out of scope: AVFoundation and browsers do not open MKV,
+  which E7 addresses. The bench reports a per-backend coverage table so the
+  gaps stay visible.
+
+A full Jellyfin client could be a showcase later, once gpui-av and the
+gpuicn controls are stable. It is not the playground.
 
 ## 6. Risks
 
@@ -203,13 +276,25 @@ sources) rather than being committed; the repo ignores video files.
   small, and run a canary against new snapshots.
 - **R2. Renderer ownership.** Zero-copy outside macOS needs renderer changes
   we do not own. Treat it as optional; nothing in goals 1 to 4 depends on it.
-- **R3. Small audience.** About 100 to 150 crates depend on GPUI. Matty
-  alone justifies the work; wider adoption is a bonus.
+- **R3. Small audience.** About 100 to 150 crates depend on GPUI. The aim is
+  to serve all of them, not only Matty, so the API and backends are judged
+  against general use; Matty is the first proof, not the bar.
 - **R4. Codecs and law.** Use only the decoders the OS or browser already
   has; never bundle GStreamer plugins or ffmpeg. Not legal advice.
 - **R5. Scope.** One maintainer plus Claude. Keep to the non-goals.
 
 ## 7. Decisions
+
+- 2026-11-12: gpui-av is a general-purpose media crate for GPUI. Matty is
+  its first user, not its scope; coverage gaps such as MKV on macOS and the
+  web count as real gaps (E7).
+- 2026-11-12: the playground is `gpui-av-lab` (section 5.1), an interactive
+  and `--bench` app with pluggable sources, Jellyfin among them in direct
+  play only, as a first-class source for the large corpus. Not a full
+  Jellyfin client (home screens, posters, resume): that is a second product
+  for one maintainer, and the lab gets the same coverage without it.
+- 2026-11-12: backends are pluggable and selectable by the app, with a
+  default per platform.
 
 - 2026-11-12: named `gpui-av` (repo `karyalabs/gpui-av`).
 - 2026-11-12 (E6): write our own backends; borrow from `gpui-video-player`
