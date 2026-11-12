@@ -10,7 +10,8 @@
 # them. The same media is under /private/ for requests that carry
 # "Authorization: Bearer <token>" (default token: lab).
 #
-# Environment: GPUI_AV_WEB_PORT (default 8090), GPUI_AV_WEB_TOKEN.
+# Environment: GPUI_AV_WEB_PORT (default 8090), GPUI_AV_WEB_TOKEN,
+# GPUI_AV_WEB_RUSTFLAGS (more compiler flags for the build).
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -45,10 +46,15 @@ build() {
 
     export CARGO_UNSTABLE_BUILD_STD=std,panic_abort
     export CARGO_TARGET_DIR="$target_dir"
+    # Shared memory for GPUI's worker threads. RUSTFLAGS from the caller
+    # would replace these flags, so it is dropped; GPUI_AV_WEB_RUSTFLAGS
+    # adds to them instead (CI passes "-D warnings").
+    unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS
     export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals \
 -C link-arg=--shared-memory -C link-arg=--max-memory=1073741824 -C link-arg=--import-memory \
 -C link-arg=--export=__wasm_init_tls -C link-arg=--export=__tls_size \
--C link-arg=--export=__tls_align -C link-arg=--export=__tls_base -C link-arg=--export=__heap_base"
+-C link-arg=--export=__tls_align -C link-arg=--export=__tls_base -C link-arg=--export=__heap_base \
+${GPUI_AV_WEB_RUSTFLAGS:-}"
     cargo +"$toolchain" build --locked -p gpui-av-lab --target wasm32-unknown-unknown --profile "$profile"
 
     local out="$target_dir/wasm32-unknown-unknown/$([[ $profile == dev ]] && echo debug || echo "$profile")"
@@ -77,7 +83,7 @@ case "${1:-}" in
     build) shift; build "$@" ;;
     serve) shift; serve "$@" ;;
     *)
-        sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
         exit 2
         ;;
 esac
