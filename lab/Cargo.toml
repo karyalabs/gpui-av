@@ -18,6 +18,12 @@ gpui-platform.workspace = true
 image.workspace = true
 smallvec.workspace = true
 web-time.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+cpu-time.workspace = true
+memory-stats.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui-av-avfoundation.workspace = true

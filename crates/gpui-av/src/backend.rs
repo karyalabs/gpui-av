@@ -101,6 +101,11 @@ pub struct Stats {
     /// Frames that were due but never drawn because a later one was due by
     /// the time the window painted.
     pub frames_dropped: u64,
+    /// The largest gap seen between the timestamp of a frame and the
+    /// session's clock (the audio clock, where there is one) at the moment
+    /// the frame was drawn: how far picture and sound have been apart.
+    /// `None` when the session does not measure it.
+    pub max_drift: Option<Duration>,
 }
 
 impl Stats {
@@ -109,7 +114,14 @@ impl Stats {
         Self {
             frames_presented,
             frames_dropped,
+            max_drift: None,
         }
+    }
+
+    /// The same stats with this as the largest drift seen.
+    pub fn with_max_drift(mut self, max_drift: Duration) -> Self {
+        self.max_drift = Some(max_drift);
+        self
     }
 }
 

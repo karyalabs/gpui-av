@@ -57,11 +57,13 @@ struct Playing {
 }
 
 impl LabView {
-    /// Creates the view and starts the first clip on the first backend.
+    /// Creates the view. With `autoplay` it starts the first clip on the
+    /// first backend; without, the stage stays empty until a clip is chosen.
     pub fn new(
         backends: Vec<Rc<dyn Backend>>,
         clips: Vec<Clip>,
         settings: Settings,
+        autoplay: bool,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut this = Self {
@@ -72,7 +74,9 @@ impl LabView {
             settings,
             playing: None,
         };
-        this.open(cx);
+        if autoplay {
+            this.open(cx);
+        }
         this
     }
 
@@ -95,6 +99,35 @@ impl LabView {
             self.backend = backend;
             self.open(cx);
         }
+    }
+
+    /// Plays clip number `clip` on backend number `backend`.
+    pub fn select(&mut self, clip: usize, backend: usize, cx: &mut Context<Self>) {
+        if clip < self.clips.len() && backend < self.backends.len() {
+            (self.clip, self.backend) = (clip, backend);
+            self.open(cx);
+        }
+    }
+
+    /// Stops and drops the current player, leaving the stage empty.
+    pub fn close(&mut self, cx: &mut Context<Self>) {
+        self.playing = None;
+        cx.notify();
+    }
+
+    /// Seeks to `position` and times how long the backend takes to report
+    /// the new frame ready (see [`Self::last_seek`]).
+    pub fn seek_to(&mut self, position: Duration, cx: &mut Context<Self>) {
+        let Some(playing) = &mut self.playing else {
+            return;
+        };
+        playing.meter.seek_started();
+        playing.player.update(cx, |player, _| player.seek(position));
+    }
+
+    /// How long the last timed seek on the current player took.
+    pub fn last_seek(&self) -> Option<Duration> {
+        self.playing.as_ref()?.meter.last_seek
     }
 
     /// Replaces the player with a new one for the current clip and backend.
@@ -143,17 +176,13 @@ impl LabView {
 
     /// Seeks by `seconds` from the current position, backwards if negative.
     fn seek_by(&mut self, seconds: f64, cx: &mut Context<Self>) {
-        let Some(playing) = &mut self.playing else {
-            return;
-        };
-        playing.meter.seek_started();
-        playing.player.update(cx, |player, _| {
-            let target = (player.position().as_secs_f64() + seconds).max(0.0);
-            player.seek(Duration::from_secs_f64(target));
-        });
+        let Some(player) = self.player() else { return };
+        let target = (player.read(cx).position().as_secs_f64() + seconds).max(0.0);
+        self.seek_to(Duration::from_secs_f64(target), cx);
     }
 
-    fn change_settings(&mut self, change: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
+    /// Changes the playback settings, for this player and the next ones.
+    pub fn change_settings(&mut self, change: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
         change(&mut self.settings);
         let settings = self.settings;
         if let Some(player) = self.player() {
@@ -285,6 +314,7 @@ impl LabView {
                     stats.frames_presented, stats.frames_dropped
                 ),
             ),
+            ("max drift", or_dash(stats.max_drift.map(millis))),
             ("first frame", or_dash(meter.first_frame.map(millis))),
             ("last seek", or_dash(meter.last_seek.map(millis))),
         ];
@@ -551,6 +581,7 @@ impl Meter {
 
     fn seek_started(&mut self) {
         self.seek_started = Some(Instant::now());
+        self.last_seek = None;
     }
 
     fn seek_finished(&mut self) {
@@ -611,7 +642,9 @@ mod tests {
     fn lab(cx: &mut TestAppContext) -> (Entity<LabView>, &mut VisualTestContext) {
         let backends: Vec<Rc<dyn Backend>> =
             vec![Rc::new(TestPatternBackend), Rc::new(TestPatternBackend)];
-        cx.add_window_view(|_, cx| LabView::new(backends, pattern_clips(), Settings::default(), cx))
+        cx.add_window_view(|_, cx| {
+            LabView::new(backends, pattern_clips(), Settings::default(), true, cx)
+        })
     }
 
     fn state(view: &Entity<LabView>, cx: &mut VisualTestContext) -> PlaybackState {

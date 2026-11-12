@@ -243,7 +243,21 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   synthetic picture with `paint_image` against the wall clock, and takes
   sources such as `pattern://1920x1080?fps=60&duration=20`. The only
   platform `cfg` in the lab is the list of backends (`lab/src/backends.rs`).
-  The manifest and `--bench` are the second part.
+- **The bench (L0, second part).** `corpus/tier-a.json` is the manifest of
+  the synthetic tier A corpus that `scripts/make-clips.sh` generates: each
+  clip's size as shown, rotation, frame rate, duration, codecs, colour
+  range and matrix, and whether it must play or fail (and with which error
+  kinds). `gpui-av-lab --bench corpus/tier-a.json` plays every clip in the
+  lab's own window, muted, and writes JSON per clip and backend: outcome,
+  time to first frame, seek time, frames shown and dropped, frame rate,
+  drift, CPU, memory, what the backend reported, and how that compares
+  with the manifest (match, mismatch, or unknown when the backend cannot
+  tell). `--base-url` plays the same corpus over HTTP with `--header`.
+  `--soak <seconds>` loops one clip and samples memory and CPU every five
+  seconds (criterion 3). The process exits 0 only when everything passed.
+- **Drift.** `Stats::max_drift` is the largest gap a session has seen
+  between a frame's timestamp and its clock at the moment the frame was
+  drawn; `None` when the session does not measure it.
 - **macOS (E1).** GPUI's surface takes only full-range NV12 and converts
   with a fixed BT.601 matrix, so the AVFoundation backend asks
   `AVPlayerItemVideoOutput` to convert each frame to exactly that
