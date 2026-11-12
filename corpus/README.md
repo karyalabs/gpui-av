@@ -17,3 +17,21 @@ track is), `color_range` and `color_matrix`. `fps` is absent for variable
 frame rate. `play_seconds` overrides how long the bench measures the clip.
 
 When you change the script, change the manifest in the same commit.
+
+## Real films, for people
+
+The synthetic clips are for the bench: test patterns and a tone are easy
+to check by machine and useless for judging playback by eye and ear. For
+that, `scripts/fetch-real-clips.sh` fetches real films with real sound
+from Blender's servers (Creative Commons): the Sintel trailer (15 MB) by
+default, and with `--all` Big Buck Bunny 1080p60 (355 MB, 10 minutes, the
+smoothness check by eye) and Tears of Steel 720p (372 MB, live action with
+dialogue, for lip sync). Then open the folder in the lab, with sound:
+
+```sh
+scripts/fetch-real-clips.sh clips/real --all
+cargo run --release -p gpui-av-lab -- clips/real
+```
+
+The lab plays any file, folder or URL the same way, so your own videos
+work too: `cargo run --release -p gpui-av-lab -- ~/Movies/some-folder`.

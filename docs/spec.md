@@ -333,7 +333,11 @@ container, codec, size, frame rate, colour range, matrix, transfer,
 rotation and duration, so the bench checks correctness as well as speed.
 No video files are committed: synthetic clips come from
 `scripts/make-clips.sh`, and public clips (Blender open films and similar)
-are listed by URL and SHA-256 and fetched by a script. Arya hosts the same
+are listed by URL and SHA-256 and fetched by a script
+(`scripts/fetch-real-clips.sh`). The synthetic clips serve the bench; the
+real films, with real picture and sound, serve people judging smoothness,
+lip sync and colour by eye and ear (Arya, 2026-11-12), and any folder of
+your own videos opens in the lab the same way. Arya hosts the same
 files in Jellyfin.
 
 Both tiers are first-class; tier A is listed first only because it is the
