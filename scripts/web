@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Builds gpui-av-lab for the browser and serves it.
+#
+#   scripts/web setup                  install the toolchain pieces the build needs
+#   scripts/web build [--dev]          build into target/web/dist (release by default)
+#   scripts/web serve [--dev] [folder] build, then serve on http://127.0.0.1:8090/
+#
+# `serve` also serves the media in `folder` (default: clips) under /clips/,
+# and the lab lists it: point it at a folder of your own videos to play
+# them. The same media is under /private/ for requests that carry
+# "Authorization: Bearer <token>" (default token: lab).
+#
+# Environment: GPUI_AV_WEB_PORT (default 8090), GPUI_AV_WEB_TOKEN.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+# GPUI's web platform shares memory with worker threads, which needs a
+# nightly std rebuilt with atomics (the same pin as gpuicn and Matty).
+toolchain=nightly-2026-08-17
+target_dir="$root/target/web"
+dist="$target_dir/dist"
+
+# wasm-bindgen's CLI must match the library version in Cargo.lock exactly.
+bindgen_version() {
+    awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock
+}
+
+setup() {
+    rustup toolchain install "$toolchain" --profile minimal \
+        --component rust-src --target wasm32-unknown-unknown
+    cargo install wasm-bindgen-cli --locked --version "$(bindgen_version)"
+    echo "ready: scripts/web serve"
+}
+
+build() {
+    local profile=release
+    [[ "${1:-}" == "--dev" ]] && profile=dev
+    if ! command -v wasm-bindgen >/dev/null \
+        || [[ "$(wasm-bindgen --version | awk '{print $2}')" != "$(bindgen_version)" ]]; then
+        echo "error: wasm-bindgen $(bindgen_version) is needed; run scripts/web setup" >&2
+        exit 1
+    fi
+
+    export CARGO_UNSTABLE_BUILD_STD=std,panic_abort
+    export CARGO_TARGET_DIR="$target_dir"
+    export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals \
+-C link-arg=--shared-memory -C link-arg=--max-memory=1073741824 -C link-arg=--import-memory \
+-C link-arg=--export=__wasm_init_tls -C link-arg=--export=__tls_size \
+-C link-arg=--export=__tls_align -C link-arg=--export=__tls_base -C link-arg=--export=__heap_base"
+    cargo +"$toolchain" build --locked -p gpui-av-lab --target wasm32-unknown-unknown --profile "$profile"
+
+    local out="$target_dir/wasm32-unknown-unknown/$([[ $profile == dev ]] && echo debug || echo "$profile")"
+    mkdir -p "$dist"
+    wasm-bindgen --target web --no-typescript --out-dir "$dist" "$out/gpui-av-lab.wasm"
+    cp lab/web/index.html "$dist/"
+    # The service worker that sends request headers, and the bench manifest.
+    cp crates/gpui-av-web/assets/gpui-av-sw.js "$dist/"
+    cp corpus/tier-a.json "$dist/"
+    ls -lh "$dist"
+}
+
+serve() {
+    local dev=()
+    if [[ "${1:-}" == "--dev" ]]; then
+        dev=(--dev)
+        shift
+    fi
+    build ${dev[@]+"${dev[@]}"}
+    exec python3 scripts/serve.py --app "$dist" \
+        --port "${GPUI_AV_WEB_PORT:-8090}" --token "${GPUI_AV_WEB_TOKEN:-lab}" "${1:-clips}"
+}
+
+case "${1:-}" in
+    setup) setup ;;
+    build) shift; build "$@" ;;
+    serve) shift; serve "$@" ;;
+    *)
+        sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+        exit 2
+        ;;
+esac

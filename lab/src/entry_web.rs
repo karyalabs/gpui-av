@@ -13,10 +13,18 @@ use gpui::App;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
+/// The list of clips `scripts/web serve` makes from the folder it serves:
+/// a JSON array of file names, relative to itself.
+const CLIP_LIST: &str = "clips/index.json";
+
+/// A browser gives GPUI no system fonts, so the lab brings one: the family
+/// GPUI's web platform falls back to.
+const FONT: &[u8] = include_bytes!("../assets/IBMPlexSans-Regular.ttf");
+
 /// Reads the query string and runs the lab.
 pub fn main() {
     gpui_platform::web_init();
-    let options = match crate::parse(arguments().into_iter()) {
+    let mut options = match crate::parse(arguments().into_iter()) {
         Ok(options) => options,
         Err(message) => return log(&message),
     };
@@ -28,15 +36,51 @@ pub fn main() {
             },
             None => None,
         };
+        // With no clip named, list what the server offers, if anything.
+        if options.targets.is_empty() && options.bench.is_none() {
+            options.targets = served_clips().await;
+        }
         match crate::plan(options, manifest.as_deref()) {
             Ok(plan) => {
                 let app = gpui_platform::single_threaded_web();
                 // The page owns the run loop; the app lives as long as it.
-                std::mem::forget(app.run_embedded(move |cx: &mut App| crate::launch(plan, cx)));
+                std::mem::forget(app.run_embedded(move |cx: &mut App| {
+                    cx.text_system()
+                        .add_fonts(vec![std::borrow::Cow::Borrowed(FONT)])
+                        .expect("load the lab's font");
+                    crate::launch(plan, cx);
+                }));
             }
             Err(message) => log(&message),
         }
     });
+}
+
+/// The URLs of the clips in [`CLIP_LIST`]; none when there is no list.
+async fn served_clips() -> Vec<String> {
+    let list = absolute(CLIP_LIST);
+    let Ok(text) = fetch_text(&list).await else {
+        return Vec::new();
+    };
+    let names: Vec<String> = serde_json::from_str(&text).unwrap_or_default();
+    names
+        .iter()
+        .filter_map(|name| web_sys::Url::new_with_base(&encode(name), &list).ok())
+        .map(|url| url.href())
+        .collect()
+}
+
+/// A file name as a URL path segment.
+fn encode(name: &str) -> String {
+    js_sys::encode_uri_component(name).into()
+}
+
+/// `url` made absolute against the page's own.
+fn absolute(url: &str) -> String {
+    let page = web_sys::window()
+        .and_then(|window| window.location().href().ok())
+        .unwrap_or_default();
+    web_sys::Url::new_with_base(url, &page).map_or_else(|_| url.to_string(), |url| url.href())
 }
 
 /// The query string as command-line arguments.
@@ -44,12 +88,8 @@ fn arguments() -> Vec<String> {
     let Some(window) = web_sys::window() else {
         return Vec::new();
     };
-    let location = window.location();
-    let page = location.href().unwrap_or_default();
-    let absolute = |url: &str| {
-        web_sys::Url::new_with_base(url, &page).map_or_else(|_| url.to_string(), |url| url.href())
-    };
-    let Some(params) = location
+    let Some(params) = window
+        .location()
         .search()
         .ok()
         .and_then(|search| web_sys::UrlSearchParams::new_with_str(&search).ok())

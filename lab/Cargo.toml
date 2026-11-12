@@ -26,6 +26,7 @@ cpu-time.workspace = true
 memory-stats.workspace = true
 
 [target.'cfg(target_family = "wasm")'.dependencies]
+gpui-av-web.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 js-sys.workspace = true

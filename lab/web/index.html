@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1" />
+    <title>gpui-av lab</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #111214; }
+      canvas { display: block; width: 100%; height: 100%; outline: 0; touch-action: none; }
+      #loading { position: fixed; inset: 0; display: grid; place-items: center;
+        font: 14px/1.4 system-ui, sans-serif; color: #9ca3af; }
+      #loading[hidden] { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="loading">Loading the gpui-av lab…</div>
+    <!--
+      The query string is the lab's command line: ?muted&backend=test-pattern,
+      ?clip=<url> (repeatable), ?bench=tier-a.json&base-url=clips/, and so on.
+      With no clip it lists clips/index.json, which scripts/web serve makes
+      from the folder it serves.
+    -->
+    <script type="module">
+      import init from "./gpui-av-lab.js";
+      const loading = document.getElementById("loading");
+      if (!crossOriginIsolated) {
+        loading.textContent =
+          "The lab needs a cross-origin isolated page (COOP and COEP headers); scripts/web serve sends them.";
+      } else {
+        init({ module_or_path: "./gpui-av-lab_bg.wasm" })
+          .then(() => { loading.hidden = true; })
+          .catch((error) => { loading.textContent = "The lab could not start: " + error; });
+      }
+    </script>
+  </body>
+</html>
