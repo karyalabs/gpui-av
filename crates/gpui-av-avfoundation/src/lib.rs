@@ -5,5 +5,14 @@
 //! straight from the decoder's GPU memory. `unsafe` and Apple types stay
 //! inside this crate.
 //!
-//! Not implemented yet: the backend arrives with experiment E1
-//! (`docs/spec.md`, section 5.2).
+//! ```ignore
+//! gpui_av::set_default_backend(Rc::new(AvFoundationBackend::new()), cx);
+//! ```
+//!
+//! On other targets this crate is empty.
+
+#[cfg(target_os = "macos")]
+mod macos;
+
+#[cfg(target_os = "macos")]
+pub use macos::AvFoundationBackend;

@@ -11,3 +11,66 @@ publish.workspace = true
 [lints]
 workspace = true
 
+# Everything is macOS only: on other targets this is an empty library.
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui-av.workspace = true
+gpui.workspace = true
+block2 = "0.6"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "NSArray",
+    "NSDictionary",
+    "NSError",
+    "NSNotification",
+    "NSOperation",
+    "NSString",
+    "NSData",
+    "NSURL",
+    "NSURLRequest",
+    "NSURLResponse",
+    "NSURLSession",
+    "NSValue",
+] }
+# The CVPixelBuffer handed to GPUI must be the type gpui-pre 0.3.12 uses:
+# objc2-core-video 0.3.2 with objc2-core-foundation 0.3.2.
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes", "CFString", "CFNumber", "CFDictionary"] }
+objc2-core-video = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "CVBase",
+    "CVBuffer",
+    "CVHostTime",
+    "CVImageBuffer",
+    "CVPixelBuffer",
+    "CVReturn",
+] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "CMBase",
+    "CMFormatDescription",
+    "CMTime",
+    "objc2-core-video",
+] }
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-core-foundation",
+    "objc2-core-media",
+    "objc2-core-video",
+    "AVAsset",
+    "AVAssetTrack",
+    "AVError",
+    "AVMediaFormat",
+    "AVPlayer",
+    "AVPlayerItem",
+    "AVPlayerItemOutput",
+    "AVPlayerItemTrack",
+    "AVVideoComposition",
+    "AVVideoSettings",
+] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# runtime_shaders: compile GPUI's Metal shaders at run time, so building
+# needs no Metal toolchain (Xcode 26+ downloads it separately).
+gpui-platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["font-kit", "runtime_shaders"] }
