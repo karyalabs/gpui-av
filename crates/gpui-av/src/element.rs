@@ -96,30 +96,35 @@ impl Element for Video {
         window: &mut Window,
         cx: &mut App,
     ) {
-        // GPUI drops element state at the end of the first frame that does
-        // not ask for it, which is how the session learns the element left.
-        if let Some(global_id) = global_id {
-            window.with_element_state(global_id, |mounted: Option<Mounted>, _| {
-                let mounted = mounted
-                    .unwrap_or_else(|| Mounted(self.player.update(cx, |player, _| player.mount())));
-                ((), mounted)
-            });
-        }
         let (natural_size, wants_frames) = {
             let player = self.player.read(cx);
             (player.natural_size(), player.wants_frames())
         };
-        // Nothing to place until the size of the picture is known.
-        let Some(natural_size) = natural_size.filter(|size| size.width > 0 && size.height > 0)
-        else {
+        // Nothing to place until the size of the picture is known, or while
+        // the element has no area.
+        let picture = natural_size
+            .filter(|size| size.width > 0 && size.height > 0)
+            .filter(|_| bounds.size.width > Pixels::ZERO && bounds.size.height > Pixels::ZERO);
+        // The session is mounted while the picture shows. GPUI drops element
+        // state at the end of the first frame that does not ask for it,
+        // which is how the session also learns that the element left.
+        if let Some(global_id) = global_id {
+            window.with_element_state(global_id, |mounted: Option<Mounted>, _| {
+                let guard = match (mounted, picture) {
+                    (Some(Mounted(Some(guard))), Some(_)) => Some(guard),
+                    (_, Some(_)) => self.player.update(cx, |player, _| player.mount()),
+                    (_, None) => None,
+                };
+                ((), Mounted(guard))
+            });
+        }
+        let Some(natural_size) = picture else {
             return;
         };
-        if bounds.size.width <= Pixels::ZERO || bounds.size.height <= Pixels::ZERO {
-            return;
-        }
         let placement = Placement {
             bounds: fit(&self.object_fit, bounds, natural_size),
-            clip: bounds,
+            // What is visible of the element: a scrolling parent may cut it.
+            clip: bounds.intersect(&window.content_mask().bounds),
         };
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             self.player.update(cx, |player, cx| {
@@ -132,9 +137,9 @@ impl Element for Video {
     }
 }
 
-/// What a session returned from `mount`, held while the element is on
-/// screen.
-struct Mounted(#[expect(dead_code, reason = "held only to be dropped")] Option<Box<dyn Any>>);
+/// What a session returned from `mount`, held while the element shows the
+/// picture.
+struct Mounted(Option<Box<dyn Any>>);
 
 impl IntoElement for Video {
     type Element = Self;

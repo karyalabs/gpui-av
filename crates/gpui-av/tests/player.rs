@@ -316,7 +316,7 @@ impl gpui::Render for Stage {
 }
 
 #[gpui::test]
-fn the_session_is_mounted_while_its_element_is_on_screen(cx: &mut TestAppContext) {
+fn the_session_is_mounted_while_its_element_shows_the_picture(cx: &mut TestAppContext) {
     let (backend, log) = scripted();
     let player = cx.new(|cx| VideoPlayer::with_backend(source(), backend, cx));
     let (stage, cx) = cx.add_window_view({
@@ -326,6 +326,20 @@ fn the_session_is_mounted_while_its_element_is_on_screen(cx: &mut TestAppContext
             shown: true,
         }
     });
+    cx.run_until_parked();
+    assert_eq!(
+        log.borrow().mounted,
+        (0, 0),
+        "nothing to show before the size of the picture is known"
+    );
+
+    sink(&log).info(MediaInfo {
+        natural_size: Some(size(1920, 1080)),
+        has_video: true,
+        ..MediaInfo::default()
+    });
+    cx.run_until_parked();
+    cx.update(|window, _| window.refresh());
     cx.run_until_parked();
     assert_eq!(
         log.borrow().mounted,

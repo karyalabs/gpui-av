@@ -84,21 +84,23 @@ pub trait Session: 'static {
         Stats::default()
     }
 
-    /// Called when the [`video()`](crate::video) element comes on screen,
-    /// before its first [`paint`](Self::paint). The value returned is kept
-    /// for as long as the element stays on screen and dropped at the end of
-    /// the first window frame that does not draw it, so its `Drop` is where
-    /// a session takes down anything it presents outside the window's scene
-    /// (a native layer, a DOM element). Called again if the element comes
-    /// back. The default keeps nothing, which suits a session that only
-    /// paints into the window.
+    /// Called when the [`video()`](crate::video) element starts showing the
+    /// picture: it is on screen, has an area, and the size of the picture
+    /// is known. The first [`paint`](Self::paint) follows. The value
+    /// returned is kept for as long as that stays true and dropped when it
+    /// stops (at the latest at the end of the first window frame that does
+    /// not draw the element), so its `Drop` is where a session takes down
+    /// anything it presents outside the window's scene: a native layer, a
+    /// DOM element. Called again when the picture shows again. The default
+    /// keeps nothing, which suits a session that only paints into the
+    /// window.
     fn mount(&mut self) -> Option<Box<dyn Any>> {
         None
     }
 
     /// Draws the frame that is due now. Called during the paint phase of
-    /// every window frame in which the [`video()`](crate::video) element is
-    /// on screen. The session presents the frame however its platform does
+    /// every window frame in which the [`video()`](crate::video) element
+    /// shows the picture. The session presents the frame however its platform does
     /// it best: painting a GPU surface or an image into the window, or
     /// moving a native layer over `placement`.
     fn paint(&mut self, placement: Placement, window: &mut Window, cx: &mut App);
