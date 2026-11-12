@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{App, Point, Window, point, size};
-use gpui_av::{Error, EventSink, MediaInfo, Placement, PlaybackState, Session, Stats};
+use gpui_av::{Error, ErrorKind, EventSink, MediaInfo, Placement, PlaybackState, Session, Stats};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
@@ -23,6 +23,16 @@ const BASE_CSS: &str = "position:fixed;margin:0;padding:0;border:0;\
                         pointer-events:none;object-fit:fill;z-index:1;";
 /// `HTMLMediaElement.HAVE_METADATA`.
 const HAVE_METADATA: u16 = 1;
+/// How much of the stated length may be missing at `ended` before the end
+/// counts as the file stopping early.
+const EARLY_END_SECONDS: f64 = 1.0;
+
+/// The page's monotonic clock, in milliseconds.
+fn now_ms() -> f64 {
+    web_sys::window()
+        .and_then(|window| window.performance())
+        .map_or(0.0, |performance| performance.now())
+}
 
 type Listener = Closure<dyn FnMut(web_sys::Event)>;
 /// What runs when the element fires an event.
@@ -54,6 +64,9 @@ struct Shared {
     /// Seeks the app asked for that have not finished. The browser seeks on
     /// its own too (a loop, a restart after the end).
     seeks: Cell<u32>,
+    /// Where playback last was, and when (`performance.now()`), while it
+    /// moves on its own: to tell a real end from a file that stops early.
+    progress: Cell<Option<(f64, f64)>>,
     /// The properties last reported.
     info: RefCell<Option<MediaInfo>>,
     /// The placement last applied; empty while the element is hidden.
@@ -99,6 +112,7 @@ impl WebSession {
             failed: Cell::new(false),
             closed: Cell::new(false),
             seeks: Cell::new(0),
+            progress: Cell::new(None),
             info: RefCell::new(None),
             css: RefCell::new(String::new()),
         });
@@ -147,7 +161,10 @@ impl Shared {
             ("durationchange", |shared| shared.refresh_info()),
             ("resize", |shared| shared.refresh_info()),
             ("loadeddata", |shared| shared.refresh_info()),
-            ("timeupdate", |shared| shared.refresh_info()),
+            ("timeupdate", |shared| {
+                shared.refresh_info();
+                shared.note_progress(false);
+            }),
             ("canplay", |shared| shared.on_can_play()),
             ("playing", |shared| shared.on_playing()),
             ("pause", |shared| shared.on_pause()),
@@ -256,6 +273,7 @@ impl Shared {
 
     fn on_playing(&self) {
         self.refresh_info();
+        self.note_progress(true);
         self.ready.set(true);
         self.state(PlaybackState::Playing);
     }
@@ -273,12 +291,57 @@ impl Shared {
         }
     }
 
+    /// Notes where playback is now, while it plays at normal speed. Unless
+    /// `reset` (a start or a seek), a jump further ahead than playing could
+    /// have got is not progress: Chrome jumps to the stated end of a file
+    /// cut short, with a `timeupdate`, just before `ended`.
+    fn note_progress(&self, reset: bool) {
+        let playing = !self.video.paused() && self.video.playback_rate() == 1.0;
+        if !playing {
+            // Chrome pauses the element just before that jump; keep the
+            // last progress for `ended` to judge. A start or a seek resets.
+            if reset {
+                self.progress.set(None);
+            }
+            return;
+        }
+        let (position, now) = (self.video.current_time(), now_ms());
+        if !reset
+            && let Some((last, at)) = self.progress.get()
+            && position - (last + (now - at) / 1000.0) > EARLY_END_SECONDS
+        {
+            return;
+        }
+        self.progress.set(Some((position, now)));
+    }
+
     fn on_ended(&self) {
         self.wanted.set(false);
+        // A file cut off inside its media data: Chrome plays to the cut,
+        // then jumps to the stated end and fires `ended`, with no error.
+        // Playing at normal speed from the last progress, the end could not
+        // have been reached yet.
+        let duration = self.video.duration();
+        if let Some((position, at)) = self.progress.take()
+            && duration.is_finite()
+        {
+            let reachable = position + (now_ms() - at) / 1000.0;
+            if duration - reachable > EARLY_END_SECONDS {
+                self.fail(Error::new(
+                    ErrorKind::Decode,
+                    format!(
+                        "the media stops after {position:.1} s of its stated {duration:.1} s: \
+                         the file is cut short or damaged"
+                    ),
+                ));
+                return;
+            }
+        }
         self.state(PlaybackState::Ended);
     }
 
     fn on_seeked(&self) {
+        self.note_progress(true);
         if self.seeks.replace(0) == 0 {
             return;
         }

@@ -45,6 +45,7 @@ web-sys = { workspace = true, features = [
     "MessagePort",
     "Navigator",
     "Node",
+    "Performance",
     "RequestInit",
     "RequestMode",
     "Response",
