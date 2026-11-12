@@ -36,6 +36,10 @@ impl Backend for AvFoundationBackend {
         "avfoundation"
     }
 
+    fn presenter(&self) -> &'static str {
+        "surface"
+    }
+
     fn open(
         &self,
         source: Source,

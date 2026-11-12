@@ -263,6 +263,8 @@ fn a_failure_is_final_and_frees_the_session(cx: &mut TestAppContext) {
     player.update(cx, |player, _| {
         assert_eq!(*player.state(), PlaybackState::Failed(error));
         assert_eq!(player.position(), Duration::ZERO);
+        // The counts from before the failure are kept.
+        assert_eq!(player.stats(), Stats::new(120, 2));
         // Commands on a failed player do nothing.
         player.play();
     });

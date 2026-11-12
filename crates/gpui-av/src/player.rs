@@ -46,6 +46,9 @@ pub enum PlayerEvent {
 /// entity notifies its observers whenever its state or media info changes.
 pub struct VideoPlayer {
     backend_name: &'static str,
+    presenter: &'static str,
+    /// The session's last stats, kept for after a failure drops it.
+    final_stats: Stats,
     session: Option<Box<dyn Session>>,
     state: PlaybackState,
     info: MediaInfo,
@@ -64,6 +67,7 @@ impl VideoPlayer {
             Some(backend) => Self::with_backend(source, backend, cx),
             None => Self::failed(
                 "none",
+                "none",
                 Error::new(
                     ErrorKind::NoBackend,
                     "no gpui-av backend is set; call gpui_av::set_default_backend at startup",
@@ -74,11 +78,11 @@ impl VideoPlayer {
 
     /// Opens `source` with a backend of the app's choice.
     pub fn with_backend(source: Source, backend: Rc<dyn Backend>, cx: &mut Context<Self>) -> Self {
-        let name = backend.name();
+        let (name, presenter) = (backend.name(), backend.presenter());
         let (sink, events) = EventSink::channel();
         let session = match backend.open(source, sink, cx) {
             Ok(session) => session,
-            Err(error) => return Self::failed(name, error),
+            Err(error) => return Self::failed(name, presenter, error),
         };
         let pump = cx.spawn(async move |this, cx| {
             while let Ok(event) = events.recv().await {
@@ -90,6 +94,8 @@ impl VideoPlayer {
         });
         Self {
             backend_name: name,
+            presenter,
+            final_stats: Stats::default(),
             session: Some(session),
             state: PlaybackState::Loading,
             info: MediaInfo::default(),
@@ -100,9 +106,11 @@ impl VideoPlayer {
         }
     }
 
-    fn failed(backend_name: &'static str, error: Error) -> Self {
+    fn failed(backend_name: &'static str, presenter: &'static str, error: Error) -> Self {
         Self {
             backend_name,
+            presenter,
+            final_stats: Stats::default(),
             session: None,
             state: PlaybackState::Failed(error),
             info: MediaInfo::default(),
@@ -129,8 +137,11 @@ impl VideoPlayer {
             BackendEvent::State(state) => {
                 if self.state != state {
                     if matches!(state, PlaybackState::Failed(_)) {
-                        // Nothing more can play; stop the backend's work.
-                        self.session = None;
+                        // Nothing more can play; stop the backend's work,
+                        // keeping what it counted.
+                        if let Some(session) = self.session.take() {
+                            self.final_stats = session.stats();
+                        }
                     }
                     self.state = state.clone();
                     cx.emit(PlayerEvent::StateChanged(state));
@@ -213,11 +224,12 @@ impl VideoPlayer {
     }
 
     /// How well the picture keeps up: frames presented and dropped, as the
-    /// backend counts them. All zero when the backend cannot tell.
+    /// backend counts them. All zero when the backend cannot tell. After a
+    /// failure, the counts as they stood when playback failed.
     pub fn stats(&self) -> Stats {
         self.session
             .as_ref()
-            .map_or(Stats::default(), |session| session.stats())
+            .map_or(self.final_stats, |session| session.stats())
     }
 
     /// The media's length, once known. `None` for media without one.
@@ -253,6 +265,11 @@ impl VideoPlayer {
     /// The name of the backend playing this media.
     pub fn backend_name(&self) -> &'static str {
         self.backend_name
+    }
+
+    /// How the backend gets frames on screen, such as `"surface"`.
+    pub fn presenter(&self) -> &'static str {
+        self.presenter
     }
 
     /// Whether the picture can change without a new event: the element keeps

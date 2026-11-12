@@ -73,4 +73,4 @@ objc2-av-foundation = { version = "0.3.2", default-features = false, features = 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 # runtime_shaders: compile GPUI's Metal shaders at run time, so building
 # needs no Metal toolchain (Xcode 26+ downloads it separately).
-gpui-platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["font-kit", "runtime_shaders"] }
+gpui-platform = { workspace = true, features = ["runtime_shaders"] }

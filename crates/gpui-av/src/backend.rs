@@ -24,6 +24,12 @@ pub trait Backend: 'static {
     /// A short stable name for stats and logs, such as `"avfoundation"`.
     fn name(&self) -> &'static str;
 
+    /// How this backend gets frames on screen, for stats and logs: for
+    /// example `"surface"`, `"image"` or `"overlay"`.
+    fn presenter(&self) -> &'static str {
+        "unknown"
+    }
+
     /// Starts loading `source`. Runs on the main thread and must not block:
     /// loading goes on in the background and its progress arrives through
     /// `events`.

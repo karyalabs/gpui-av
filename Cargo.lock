@@ -1844,6 +1844,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui-av-lab"
+version = "0.0.0"
+dependencies = [
+ "gpui-av",
+ "gpui-av-avfoundation",
+ "gpui-pre",
+ "gpui-pre-platform",
+ "image",
+ "smallvec",
+ "web-time",
+]
+
+[[package]]
 name = "gpui-av-web"
 version = "0.0.0"
 
