@@ -9,9 +9,11 @@ crate is unrelated macOS bindings.)
 
 ## 0. Start here
 
-**Where things stand (2026-11-12).** The proof of concept (section 5.2) has
-started: the workspace and the `gpui-av` API crate exist (section 4.2), with
-no real backend yet. E6 is done (section 5): we write our own backends and
+**Where things stand (2026-11-13).** The proof of concept (section 5.2) has
+started: the workspace, the `gpui-av` API crate and the macOS backend
+(`gpui-av-avfoundation`) exist (section 4.2). E1 is answered: AVPlayer
+drawn with `surface` plays 1080p60 with no dropped frames at about a fifth
+of a core. E6 is done (section 5): we write our own backends and
 borrow ideas from `gpui-video-player`. Everything else is open. When gpui-av works, its player
 moves into gpuicn (Karya Labs' GPUI component library) as a component, and
 Matty uses it from there. Until then this repo stands alone: no other Karya
@@ -226,6 +228,15 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
 - **Still to settle in E3:** how a session learns that its element left the
   screen while the player lives on (the web overlay must be hidden then).
   A session is dropped with its player, which covers the player going away.
+- **Stats.** `Session::stats` reports frames presented and dropped (zero
+  for a session that cannot tell); `VideoPlayer::stats` passes them on for
+  the lab's overlay and bench.
+- **macOS (E1).** GPUI's surface takes only full-range NV12 and converts
+  with a fixed BT.601 matrix, so the AVFoundation backend asks
+  `AVPlayerItemVideoOutput` to convert each frame to exactly that
+  (`420f`, BT.601 colour properties). Rotated tracks go through an
+  `AVVideoComposition`, since `paint_surface` cannot rotate. Request
+  headers use `AVURLAssetHTTPHeaderFieldsKey` for now (section 6, R6).
 - **Media info** carries duration, natural size (as shown, rotation
   applied), the rotation tag, whether there is video and audio, and colour
   range and matrix as optional values: a backend leaves out what the
@@ -240,7 +251,7 @@ question; when it is done, the answer is folded into this spec.
 | ID | Question | Done when |
 |---|---|---|
 | E0 | What do real Mattermost videos look like (containers, codecs, sizes, lengths)? | A table from a sample of real attachments |
-| E1 | macOS: does AVPlayer + `surface()` play 1080p60 smoothly inside a GPUI window? | A demo plays with sound; CPU and dropped frames measured |
+| E1 | macOS: does AVPlayer + `surface()` play 1080p60 smoothly inside a GPUI window? | A demo plays with sound; CPU and dropped frames measured. **Answered 2026-11-13: yes**, 0 of 3600 frames dropped at ~19% of one core; marked done with the POC. See `experiments/e1-avfoundation` |
 | E2 | Linux: GStreamer + RenderImage at 1080p: what does the per-frame copy cost? | CPU, memory and dropped frames at 720p and 1080p |
 | E3 | Web: a DOM `<video>` overlay that tracks a GPUI element through scroll, resize and close | Works in Chrome, Firefox and Safari |
 | E4 | Web: WebCodecs frames drawn inside the canvas without an overlay | One clip plays in Chrome; cost measured against E3 |
@@ -318,8 +329,12 @@ gpuicn controls are stable. It is not the playground.
 
 ### 5.2 The proof of concept (POC)
 
-Status: agreed 2026-11-12. In progress: the workspace and the API crate
-are in (section 4.2); the backends and the lab are next.
+Status: agreed 2026-11-12. In progress: the workspace, the API crate and
+the macOS backend are in (section 4.2); the web backend and the lab are
+next. First macOS numbers, from E1's example rather than the bench
+(M4 Max, 1080p60 H.264, local file): 0 of 3600 frames dropped in 60 s,
+time to first frame 195 to 240 ms, a seek settles in 85 ms; A/V drift not
+yet measured.
 
 **What it proves.** The architecture in section 4 works end to end on two
 platforms that share almost nothing underneath: a real `gpui-av` crate
@@ -428,8 +443,21 @@ tier A, and the next milestone is Linux (E2).
 - **R4. Codecs and law.** Use only the decoders the OS or browser already
   has; never bundle GStreamer plugins or ffmpeg. Not legal advice.
 - **R5. Scope.** One maintainer plus Claude. Keep to the non-goals.
+- **R6. Request headers on macOS.** `AVURLAssetHTTPHeaderFieldsKey` is
+  exported but not in a public header (App Store review has rejected it),
+  and AVFoundation sends the headers on to the target of a cross-host
+  redirect. An `AVAssetResourceLoaderDelegate` doing the HTTP ourselves
+  removes both; it is the next step for the macOS backend (E1).
 
 ## 7. Decisions
+
+- 2026-11-13 (E1): the macOS backend is AVPlayer + AVPlayerItemVideoOutput
+  drawn with `paint_surface`, converting frames to full-range NV12 with the
+  BT.601 matrix that GPUI's shader assumes; `MediaInfo.color` still reports
+  the file's own range and matrix. Letting GPUI's surface take limited-range
+  and BT.709 frames is an upstream candidate that would remove the
+  conversion.
+- 2026-11-13 (E1): `Session` gains `stats()` (frames presented and dropped).
 
 - 2026-11-12: gpui-av is a general-purpose media crate for GPUI. Matty is
   its first user, not its scope; coverage gaps such as MKV on macOS and the

@@ -6,13 +6,15 @@ OUT="${1:-clips}"
 mkdir -p "$OUT"
 
 # clip <name> <size> <rate> <seconds> [extra ffmpeg output options...]
+# The sound is a quiet 440 Hz tone: enough to prove audio plays, not loud
+# enough to give anyone a headache during a long run.
 clip() {
   local name="$1" size="$2" rate="$3" seconds="$4"
   shift 4
   ffmpeg -loglevel error -y \
     -f lavfi -i "testsrc2=size=$size:rate=$rate" \
     -f lavfi -i "sine=frequency=440" \
-    -t "$seconds" -c:v libx264 -pix_fmt yuv420p \
+    -t "$seconds" -af volume=0.05 -c:v libx264 -pix_fmt yuv420p \
     -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 \
     -c:a aac -shortest -movflags +faststart "$@" \
     "$OUT/$name.mp4"
