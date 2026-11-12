@@ -136,13 +136,13 @@ question; when it is done, the answer is folded into this spec.
 | E3 | Web: a DOM `<video>` overlay that tracks a GPUI element through scroll, resize and close | Works in Chrome, Firefox and Safari |
 | E4 | Web: WebCodecs frames drawn inside the canvas without an overlay | One clip plays in Chrome; cost measured against E3 |
 | E5 | Zero-copy on wgpu: implement `PrimitiveBatch::Surfaces` (NV12) in gpui-pre-wgpu | Patch works locally; decide whether to propose it to Zed |
-| E6 | Can we build on gpui-video-player or alhazen instead of writing backends? | A written yes or no with reasons |
+| E6 | Can we build on gpui-video-player or alhazen instead of writing backends? | **Done 2026-11-12: no; reuse ideas.** See `experiments/e6-existing-crates` |
 
 Order: E0 and E6 first (cheap, and they can cancel work), then E1 and E3
 (the two biggest user groups after the web), then E2, E4 and E5.
 
-Test clips are generated with a script (for example ffmpeg's `testsrc2` and
-`sine` sources) rather than committed; the repo ignores video files.
+Test clips come from `scripts/make-clips.sh` (ffmpeg's `testsrc2` and `sine`
+sources) rather than being committed; the repo ignores video files.
 
 ## 6. Risks
 
@@ -160,6 +160,10 @@ Test clips are generated with a script (for example ffmpeg's `testsrc2` and
 ## 7. Decisions
 
 - 2026-11-12: named `gpui-av` (repo `karyalabs/gpui-av`).
+- 2026-11-12 (E6): write our own backends; borrow from `gpui-video-player`
+  (MIT) where useful. The backend API takes request headers from day one
+  (Mattermost file URLs need auth), and colour range and matrix come from the
+  decoder, never guessed.
 - 2026-11-10: native decoders, not ffmpeg (size, licensing, patents, own A/V
   sync). ffmpeg.wasm also rejected for the web (software decode, about
   25 to 30 MB, slow past 720p, needs cross-origin isolation for threads).
