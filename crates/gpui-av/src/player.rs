@@ -3,7 +3,9 @@ use std::time::Duration;
 
 use gpui::{App, Context, EventEmitter, Size, Task, Window};
 
-use crate::backend::{Backend, BackendEvent, EventSink, Placement, Session, default_backend};
+use crate::backend::{
+    Backend, BackendEvent, EventSink, Placement, Session, Stats, default_backend,
+};
 use crate::{Error, ErrorKind, MediaInfo, Source};
 
 /// Where a player is in the life of its media.
@@ -208,6 +210,14 @@ impl VideoPlayer {
         self.session
             .as_ref()
             .map_or(Duration::ZERO, |session| session.position())
+    }
+
+    /// How well the picture keeps up: frames presented and dropped, as the
+    /// backend counts them. All zero when the backend cannot tell.
+    pub fn stats(&self) -> Stats {
+        self.session
+            .as_ref()
+            .map_or(Stats::default(), |session| session.stats())
     }
 
     /// The media's length, once known. `None` for media without one.

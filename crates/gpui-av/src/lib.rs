@@ -32,7 +32,8 @@ mod player;
 mod source;
 
 pub use backend::{
-    Backend, BackendEvent, EventSink, Placement, Session, default_backend, set_default_backend,
+    Backend, BackendEvent, EventSink, Placement, Session, Stats, default_backend,
+    set_default_backend,
 };
 pub use element::{Video, video};
 pub use error::{Error, ErrorKind};

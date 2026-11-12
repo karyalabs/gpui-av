@@ -71,12 +71,40 @@ pub trait Session: 'static {
     /// there is one).
     fn position(&self) -> Duration;
 
+    /// Counters for how well the picture keeps up. The default reports
+    /// nothing, for a session that cannot tell.
+    fn stats(&self) -> Stats {
+        Stats::default()
+    }
+
     /// Draws the frame that is due now. Called during the paint phase of
     /// every window frame in which the [`video()`](crate::video) element is
     /// on screen. The session presents the frame however its platform does
     /// it best: painting a GPU surface or an image into the window, or
     /// moving a native layer over `placement`.
     fn paint(&mut self, placement: Placement, window: &mut Window, cx: &mut App);
+}
+
+/// How well a session's picture keeps up, counted since it was opened.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Stats {
+    /// Frames drawn into the window, each counted once however many window
+    /// frames showed it.
+    pub frames_presented: u64,
+    /// Frames that were due but never drawn because a later one was due by
+    /// the time the window painted.
+    pub frames_dropped: u64,
+}
+
+impl Stats {
+    /// Stats with these counts.
+    pub fn new(frames_presented: u64, frames_dropped: u64) -> Self {
+        Self {
+            frames_presented,
+            frames_dropped,
+        }
+    }
 }
 
 /// Where a session draws its frame, in window coordinates.

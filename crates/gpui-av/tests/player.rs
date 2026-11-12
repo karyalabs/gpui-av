@@ -8,7 +8,7 @@ use std::time::Duration;
 use gpui::{App, AppContext, Entity, TestAppContext, Window, size};
 use gpui_av::{
     Backend, Error, ErrorKind, EventSink, MediaInfo, Placement, PlaybackState, PlayerEvent,
-    Session, Source, VideoPlayer,
+    Session, Source, Stats, VideoPlayer,
 };
 
 /// What the scripted backend saw, shared with the test.
@@ -79,6 +79,9 @@ impl Session for ScriptedSession {
     }
     fn position(&self) -> Duration {
         Duration::from_secs(7)
+    }
+    fn stats(&self) -> Stats {
+        Stats::new(120, 2)
     }
     fn paint(&mut self, _placement: Placement, _window: &mut Window, _cx: &mut App) {}
 }
@@ -184,6 +187,7 @@ fn backend_events_become_state_and_player_events(cx: &mut TestAppContext) {
         assert_eq!(player.natural_size(), Some(size(1920, 1080)));
         assert_eq!(*player.state(), PlaybackState::Playing);
         assert_eq!(player.position(), Duration::from_secs(7));
+        assert_eq!(player.stats(), Stats::new(120, 2));
     });
     // The repeated Ready is not announced twice.
     assert_eq!(
