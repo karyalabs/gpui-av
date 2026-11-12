@@ -47,6 +47,9 @@ pub struct LabView {
     clip: usize,
     settings: Settings,
     playing: Option<Playing>,
+    /// Every time the window has drawn this view, for the bench's window
+    /// frame rate.
+    renders: u64,
 }
 
 /// The clip being played, with what the lab measures about it.
@@ -73,6 +76,7 @@ impl LabView {
             clip: 0,
             settings,
             playing: None,
+            renders: 0,
         };
         if autoplay {
             this.open(cx);
@@ -128,6 +132,11 @@ impl LabView {
     /// How long the last timed seek on the current player took.
     pub fn last_seek(&self) -> Option<Duration> {
         self.playing.as_ref()?.meter.last_seek
+    }
+
+    /// How many times the window has drawn this view so far.
+    pub fn renders(&self) -> u64 {
+        self.renders
     }
 
     /// Replaces the player with a new one for the current clip and backend.
@@ -412,6 +421,7 @@ impl LabView {
 
 impl Render for LabView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders += 1;
         if let Some(playing) = &mut self.playing {
             let player = playing.player.read(cx);
             let presented = player.stats().frames_presented;

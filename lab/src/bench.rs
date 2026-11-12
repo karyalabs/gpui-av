@@ -92,6 +92,10 @@ pub struct ClipResult {
     pub dropped_percent: Option<f64>,
     /// Frames shown per second during the measured time.
     pub video_fps: Option<f64>,
+    /// How often the window drew during the measured time. A window that
+    /// draws slower than the clip's frame rate drops frames whatever the
+    /// backend does.
+    pub window_fps: Option<f64>,
     /// The largest gap between a frame's timestamp and the clock when it
     /// was shown; `None` when the backend does not measure it.
     pub max_drift_ms: Option<f64>,
@@ -290,6 +294,7 @@ async fn run_one(
 
     // 2. Play and count, or wait for the failure the manifest promises.
     let at_start = last.stats;
+    let renders_at_start = view.read_with(cx, |view, _| view.renders());
     let measured_from = Instant::now();
     let mut played = Duration::ZERO;
     if started && !last.failed() {
@@ -314,6 +319,7 @@ async fn run_one(
         }
         played = measured_from.elapsed();
     }
+    let renders = view.read_with(cx, |view, _| view.renders()) - renders_at_start;
     let frames_presented = last.stats.frames_presented - at_start.frames_presented;
     let frames_dropped = last.stats.frames_dropped - at_start.frames_dropped;
 
@@ -387,6 +393,8 @@ async fn run_one(
         dropped_percent: (due > 0).then(|| rounded(frames_dropped as f64 * 100.0 / due as f64)),
         video_fps: (frames_presented > 0 && played > Duration::ZERO)
             .then(|| rounded(frames_presented as f64 / played.as_secs_f64())),
+        window_fps: (played > Duration::ZERO && !must_fail)
+            .then(|| rounded(renders as f64 / played.as_secs_f64())),
         max_drift_ms: last.stats.max_drift.map(millis),
         cpu_percent: cpu,
         memory_mb: memory.map(megabytes),
