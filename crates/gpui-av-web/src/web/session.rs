@@ -14,7 +14,7 @@ use wasm_bindgen_futures::{JsFuture, spawn_local};
 use super::probe::probe;
 use super::proxy::Proxy;
 use crate::errors;
-use crate::layout::Layout;
+use crate::layout::{Canvas, Layout};
 
 /// The element's style apart from where it is. It sits above the canvas,
 /// lets every pointer event through to GPUI, and stretches the picture to
@@ -418,7 +418,7 @@ impl Session for WebSession {
     }
 
     fn paint(&mut self, placement: Placement, window: &mut Window, _cx: &mut App) {
-        let css = Layout::new(&placement, canvas_origin(window))
+        let css = Layout::new(&placement, canvas_of(window))
             .map(|layout| layout.css())
             .unwrap_or_default();
         self.shared.place(css);
@@ -444,13 +444,26 @@ impl Drop for WebSession {
     }
 }
 
-/// Where the top left corner of the window's canvas is in the browser's
-/// viewport, in CSS pixels.
-fn canvas_origin(window: &Window) -> Point<f32> {
-    canvas(window).map_or_else(Point::default, |canvas| {
-        let rect = canvas.get_bounding_client_rect();
-        point(rect.left() as f32, rect.top() as f32)
-    })
+/// Where the window's canvas is in the browser's viewport, measured from
+/// the canvas itself.
+fn canvas_of(window: &Window) -> Canvas {
+    let unscaled = Canvas {
+        origin: Point::default(),
+        scale: point(1.0, 1.0),
+    };
+    let Some(canvas) = canvas(window) else {
+        return unscaled;
+    };
+    let rect = canvas.get_bounding_client_rect();
+    let logical = window.viewport_size();
+    let (width, height) = (f32::from(logical.width), f32::from(logical.height));
+    if width <= 0.0 || height <= 0.0 {
+        return unscaled;
+    }
+    Canvas {
+        origin: point(rect.left() as f32, rect.top() as f32),
+        scale: point(rect.width() as f32 / width, rect.height() as f32 / height),
+    }
 }
 
 /// The canvas a GPUI window draws into.

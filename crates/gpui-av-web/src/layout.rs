@@ -15,13 +15,26 @@ pub(crate) struct Layout {
     pub inset: [f32; 4],
 }
 
+/// Where a window's canvas is in the browser's viewport: the CSS position
+/// of its top left corner, and how many CSS pixels one of GPUI's logical
+/// pixels covers. That is 1 unless the canvas is stretched: its backing
+/// store was clamped to the GPU's largest texture, or the page scales it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Canvas {
+    pub origin: Point<f32>,
+    pub scale: Point<f32>,
+}
+
 impl Layout {
-    /// The layout for a placement in a window whose canvas has its top left
-    /// corner at `canvas` in the viewport. `None` when nothing of the
-    /// picture is visible. GPUI's logical pixels are CSS pixels.
-    pub fn new(placement: &Placement, canvas: Point<f32>) -> Option<Self> {
+    /// The layout for a placement in a window drawn on `canvas`. `None`
+    /// when nothing of the picture is visible.
+    pub fn new(placement: &Placement, canvas: Canvas) -> Option<Self> {
         let Bounds { origin, size } = placement.bounds;
-        let (width, height) = (f32::from(size.width), f32::from(size.height));
+        let (scale_x, scale_y) = (canvas.scale.x, canvas.scale.y);
+        let (width, height) = (
+            f32::from(size.width) * scale_x,
+            f32::from(size.height) * scale_y,
+        );
         let visible = placement.bounds.intersect(&placement.clip);
         if width <= 0.0
             || height <= 0.0
@@ -30,17 +43,17 @@ impl Layout {
         {
             return None;
         }
-        let cut = |amount: Pixels| f32::from(amount).max(0.0);
+        let cut = |amount: Pixels, scale: f32| (f32::from(amount) * scale).max(0.0);
         Some(Self {
-            left: canvas.x + f32::from(origin.x),
-            top: canvas.y + f32::from(origin.y),
+            left: canvas.origin.x + f32::from(origin.x) * scale_x,
+            top: canvas.origin.y + f32::from(origin.y) * scale_y,
             width,
             height,
             inset: [
-                cut(visible.top() - placement.bounds.top()),
-                cut(placement.bounds.right() - visible.right()),
-                cut(placement.bounds.bottom() - visible.bottom()),
-                cut(visible.left() - placement.bounds.left()),
+                cut(visible.top() - placement.bounds.top(), scale_y),
+                cut(placement.bounds.right() - visible.right(), scale_x),
+                cut(placement.bounds.bottom() - visible.bottom(), scale_y),
+                cut(visible.left() - placement.bounds.left(), scale_x),
             ],
         })
     }
@@ -62,6 +75,13 @@ mod tests {
 
     use super::*;
 
+    fn canvas_at(x: f32, y: f32) -> Canvas {
+        Canvas {
+            origin: point(x, y),
+            scale: point(1.0, 1.0),
+        }
+    }
+
     fn bounds(x: f32, y: f32, width: f32, height: f32) -> Bounds<Pixels> {
         Bounds::new(point(px(x), px(y)), size(px(width), px(height)))
     }
@@ -72,7 +92,7 @@ mod tests {
             bounds: bounds(100.0, 50.0, 640.0, 360.0),
             clip: bounds(100.0, 0.0, 640.0, 460.0),
         };
-        let layout = Layout::new(&placement, point(8.0, 16.0)).unwrap();
+        let layout = Layout::new(&placement, canvas_at(8.0, 16.0)).unwrap();
         assert_eq!(
             layout,
             Layout {
@@ -98,8 +118,31 @@ mod tests {
             bounds: bounds(-40.0, 0.0, 480.0, 270.0),
             clip: bounds(0.0, 20.0, 400.0, 250.0),
         };
-        let layout = Layout::new(&placement, point(0.0, 0.0)).unwrap();
+        let layout = Layout::new(&placement, canvas_at(0.0, 0.0)).unwrap();
         assert_eq!(layout.inset, [20.0, 40.0, 0.0, 40.0]);
+    }
+
+    #[test]
+    fn a_stretched_canvas_stretches_the_layout() {
+        // Each logical pixel covers two CSS pixels across and down.
+        let placement = Placement {
+            bounds: bounds(100.0, 50.0, 320.0, 180.0),
+            clip: bounds(100.0, 60.0, 320.0, 170.0),
+        };
+        let canvas = Canvas {
+            origin: point(10.0, 0.0),
+            scale: point(2.0, 2.0),
+        };
+        assert_eq!(
+            Layout::new(&placement, canvas).unwrap(),
+            Layout {
+                left: 210.0,
+                top: 100.0,
+                width: 640.0,
+                height: 360.0,
+                inset: [20.0, 0.0, 0.0, 0.0],
+            }
+        );
     }
 
     #[test]
@@ -108,11 +151,11 @@ mod tests {
             bounds: bounds(0.0, 500.0, 320.0, 180.0),
             clip: bounds(0.0, 0.0, 320.0, 400.0),
         };
-        assert_eq!(Layout::new(&placement, point(0.0, 0.0)), None);
+        assert_eq!(Layout::new(&placement, canvas_at(0.0, 0.0)), None);
         let empty = Placement {
             bounds: bounds(0.0, 0.0, 0.0, 180.0),
             clip: bounds(0.0, 0.0, 320.0, 400.0),
         };
-        assert_eq!(Layout::new(&empty, point(0.0, 0.0)), None);
+        assert_eq!(Layout::new(&empty, canvas_at(0.0, 0.0)), None);
     }
 }
