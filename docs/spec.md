@@ -361,11 +361,28 @@ gpuicn controls are stable. It is not the playground.
 ### 5.2 The proof of concept (POC)
 
 Status: agreed 2026-11-12. In progress: the workspace, the API crate, the
-macOS backend and the interactive lab with its test-pattern backend are in
-(section 4.2); the bench and the web backend are next. First macOS numbers, from E1's example rather than the bench
-(M4 Max, 1080p60 H.264, local file): 0 of 3600 frames dropped in 60 s,
-time to first frame 195 to 240 ms, a seek settles in 85 ms; A/V drift not
-yet measured.
+macOS backend, the interactive lab with its test-pattern backend, and the
+bench are in (section 4.2); the web backend is next.
+
+macOS measured 2026-11-12 with the lab's bench (M4 Max, macOS 27.2; tables
+in `experiments/e1-avfoundation`), against the criteria below:
+1. 1080p60 for 60 s: 0 of about 3,565 frames dropped (file and HTTP); max
+   drift 8 to 17 ms against AVPlayer's clock. Met.
+2. First frame 30 to 80 ms from a local file, 140 ms for the rotated clip
+   (it goes through a video composition) and 190 to 240 ms for the first
+   player in a process; seeks 30 to 95 ms, file or local HTTP. Met.
+3. 10 minute loop of the 1080p60 clip: resident memory +1.1 MB with no
+   trend, CPU 33% of a core (lab window included), 0.82% dropped, all in
+   the first and last 5 s. Met; the web half is open.
+4. All 11 playable tier A clips match the manifest's size, rotation,
+   duration, tracks, colour range and matrix. Met on macOS.
+5. Over local HTTP with a bearer token and range requests every clip
+   plays and every request carries the header; without it every clip ends
+   in `Failed(Unauthorized)`. Met on macOS.
+6. Missing file `NotFound`, truncated and random bytes `Decode`, FFV1
+   `Unsupported`; no panic, no hang. Met on macOS.
+Caveat: runs where macOS throttled a covered lab window drop frames; the
+bench records `window_fps` so they can be told apart.
 
 **What it proves.** The architecture in section 4 works end to end on two
 platforms that share almost nothing underneath: a real `gpui-av` crate
