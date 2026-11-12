@@ -1,3 +1,5 @@
+use std::any::Any;
+
 use gpui::{
     App, Bounds, ContentMask, DevicePixels, Element, ElementId, Entity, GlobalElementId,
     InspectorElementId, IntoElement, LayoutId, ObjectFit, Pixels, Refineable, Size, Style,
@@ -51,8 +53,10 @@ impl Element for Video {
     type RequestLayoutState = ();
     type PrepaintState = ();
 
+    // The element keeps state from frame to frame (what the session
+    // returned from `mount`), so it needs an identity: its player's.
     fn id(&self) -> Option<ElementId> {
-        None
+        Some(ElementId::View(self.player.entity_id()))
     }
 
     fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
@@ -84,7 +88,7 @@ impl Element for Video {
 
     fn paint(
         &mut self,
-        _global_id: Option<&GlobalElementId>,
+        global_id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
@@ -92,6 +96,15 @@ impl Element for Video {
         window: &mut Window,
         cx: &mut App,
     ) {
+        // GPUI drops element state at the end of the first frame that does
+        // not ask for it, which is how the session learns the element left.
+        if let Some(global_id) = global_id {
+            window.with_element_state(global_id, |mounted: Option<Mounted>, _| {
+                let mounted = mounted
+                    .unwrap_or_else(|| Mounted(self.player.update(cx, |player, _| player.mount())));
+                ((), mounted)
+            });
+        }
         let (natural_size, wants_frames) = {
             let player = self.player.read(cx);
             (player.natural_size(), player.wants_frames())
@@ -118,6 +131,10 @@ impl Element for Video {
         }
     }
 }
+
+/// What a session returned from `mount`, held while the element is on
+/// screen.
+struct Mounted(#[expect(dead_code, reason = "held only to be dropped")] Option<Box<dyn Any>>);
 
 impl IntoElement for Video {
     type Element = Self;

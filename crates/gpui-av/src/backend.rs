@@ -8,6 +8,7 @@
 //! Nothing here names a platform type, so a backend can be written against
 //! this module alone.
 
+use std::any::Any;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -81,6 +82,18 @@ pub trait Session: 'static {
     /// nothing, for a session that cannot tell.
     fn stats(&self) -> Stats {
         Stats::default()
+    }
+
+    /// Called when the [`video()`](crate::video) element comes on screen,
+    /// before its first [`paint`](Self::paint). The value returned is kept
+    /// for as long as the element stays on screen and dropped at the end of
+    /// the first window frame that does not draw it, so its `Drop` is where
+    /// a session takes down anything it presents outside the window's scene
+    /// (a native layer, a DOM element). Called again if the element comes
+    /// back. The default keeps nothing, which suits a session that only
+    /// paints into the window.
+    fn mount(&mut self) -> Option<Box<dyn Any>> {
+        None
     }
 
     /// Draws the frame that is due now. Called during the paint phase of

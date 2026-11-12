@@ -18,6 +18,17 @@ struct Log {
     commands: Vec<String>,
     sink: Option<EventSink>,
     sessions_dropped: usize,
+    /// How many times the element mounted, and how many of those ended.
+    mounted: (usize, usize),
+}
+
+/// What the scripted session hands out from `mount`.
+struct MountGuard(Rc<RefCell<Log>>);
+
+impl Drop for MountGuard {
+    fn drop(&mut self) {
+        self.0.borrow_mut().mounted.1 += 1;
+    }
 }
 
 struct Scripted {
@@ -82,6 +93,10 @@ impl Session for ScriptedSession {
     }
     fn stats(&self) -> Stats {
         Stats::new(120, 2)
+    }
+    fn mount(&mut self) -> Option<Box<dyn std::any::Any>> {
+        self.log.borrow_mut().mounted.0 += 1;
+        Some(Box::new(MountGuard(self.log.clone())))
     }
     fn paint(&mut self, _placement: Placement, _window: &mut Window, _cx: &mut App) {}
 }
@@ -280,4 +295,67 @@ fn dropping_the_player_drops_the_session(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     assert_eq!(log.borrow().sessions_dropped, 1);
+}
+
+/// A view that shows the player's `video()` element, or nothing.
+struct Stage {
+    player: Entity<VideoPlayer>,
+    shown: bool,
+}
+
+impl gpui::Render for Stage {
+    fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+        use gpui::{ParentElement, Styled};
+        let stage = gpui::div().size_full();
+        if self.shown {
+            stage.child(gpui_av::video(&self.player).size_full())
+        } else {
+            stage
+        }
+    }
+}
+
+#[gpui::test]
+fn the_session_is_mounted_while_its_element_is_on_screen(cx: &mut TestAppContext) {
+    let (backend, log) = scripted();
+    let player = cx.new(|cx| VideoPlayer::with_backend(source(), backend, cx));
+    let (stage, cx) = cx.add_window_view({
+        let player = player.clone();
+        |_, _| Stage {
+            player,
+            shown: true,
+        }
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        log.borrow().mounted,
+        (1, 0),
+        "mounted once, still on screen"
+    );
+
+    // Drawing again does not mount again.
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert_eq!(log.borrow().mounted, (1, 0));
+
+    // The element leaves; the player lives on.
+    stage.update(cx, |stage, cx| {
+        stage.shown = false;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        log.borrow().mounted,
+        (1, 1),
+        "unmounted by the frame without it"
+    );
+    assert_eq!(log.borrow().sessions_dropped, 0);
+
+    // And comes back.
+    stage.update(cx, |stage, cx| {
+        stage.shown = true;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert_eq!(log.borrow().mounted, (2, 1));
 }
