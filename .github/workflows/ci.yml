@@ -24,11 +24,13 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       linux: ${{ steps.pick.outputs.linux }}
+      macos: ${{ steps.pick.outputs.macos }}
     steps:
       - id: pick
         uses: karyalabs/.github/actions/pick-runners@v1
         with:
           linux: ${{ vars.KARYA_LINUX_RUNNER }}
+          macos: ${{ vars.KARYA_MACOS_RUNNER }}
 
   linux:
     needs: runners
@@ -50,9 +52,23 @@ jobs:
       - name: Check for the web
         run: cargo clippy --workspace --locked --target wasm32-unknown-unknown
 
+  # The AVFoundation backend only builds on macOS. The example compiles
+  # GPUI's shaders at run time, so no Metal toolchain is needed here.
+  macos:
+    needs: runners
+    runs-on: ${{ fromJSON(needs.runners.outputs.macos) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: ${{ runner.environment != 'self-hosted' }}
+      - uses: karyalabs/.github/actions/self-hosted-prep@v1
+      - uses: karyalabs/.github/actions/rust-toolchain@v1
+      - run: cargo clippy --workspace --all-targets --locked
+      - run: cargo test --workspace --locked
+
   ci:
     if: always()
-    needs: [linux]
+    needs: [linux, macos]
     runs-on: ubuntu-latest
     steps:
       - name: Every job passed
