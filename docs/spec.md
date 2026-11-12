@@ -14,7 +14,8 @@ started: the workspace, the `gpui-av` API crate, the macOS backend
 (`gpui-av-avfoundation`) and the interactive part of the lab (`lab/`)
 exist (section 4.2). E1 is answered: AVPlayer
 drawn with `surface` plays 1080p60 with no dropped frames at about a fifth
-of a core. E6 is done (section 5): we write our own backends and
+of a core. The web backend (E3) plays the whole tier A corpus in Chrome;
+its soak, hand checks and Safari are next. E6 is done (section 5): we write our own backends and
 borrow ideas from `gpui-video-player`. Everything else is open. When gpui-av works, its player
 moves into gpuicn (Karya Labs' GPUI component library) as a component, and
 Matty uses it from there. Until then this repo stands alone: no other Karya
@@ -338,7 +339,7 @@ question; when it is done, the answer is folded into this spec.
 | E0 | What do real Mattermost videos look like (containers, codecs, sizes, lengths)? | A table from a sample of real attachments |
 | E1 | macOS: does AVPlayer + `surface()` play 1080p60 smoothly inside a GPUI window? | A demo plays with sound; CPU and dropped frames measured. **Answered 2026-11-13: yes**, 0 of 3600 frames dropped at ~19% of one core; marked done with the POC. See `experiments/e1-avfoundation` |
 | E2 | Linux: GStreamer + RenderImage at 1080p: what does the per-frame copy cost? | CPU, memory and dropped frames at 720p and 1080p |
-| E3 | Web: a DOM `<video>` overlay that tracks a GPUI element through scroll, resize and close | Works in Chrome, Firefox and Safari |
+| E3 | Web: a DOM `<video>` overlay that tracks a GPUI element through scroll, resize and close | Works in Chrome, Firefox and Safari. **In progress 2026-11-12:** tier A passes in Chrome; soak, interactive checks and Safari/Firefox to come. See `experiments/e3-web-overlay` |
 | E4 | Web: WebCodecs frames drawn inside the canvas without an overlay | One clip plays in Chrome; cost measured against E3 |
 | E5 | Zero-copy on wgpu: implement `PrimitiveBatch::Surfaces` (NV12) in gpui-pre-wgpu | Patch works locally; decide whether to propose it to Zed |
 | E6 | Can we build on gpui-video-player or alhazen instead of writing backends? | **Done 2026-11-12: no; reuse ideas.** See `experiments/e6-existing-crates` |
@@ -421,11 +422,25 @@ gpuicn controls are stable. It is not the playground.
 Status: agreed 2026-11-12. In progress: the workspace, the API crate, the
 macOS backend, the interactive lab with its test-pattern backend, the
 bench, and the web backend with the lab's web build are in (section 4.2).
-The web half of the criteria is still to be measured in Chrome on the
-same Mac; so far the web build has only been run in headless Chromium
-without H.264 (VP8 and VP9 clips: playback, the bench in the page, the
-header service worker, a 401, a 404, overlay alignment through resize and
-scroll).
+Chrome measured 2026-11-12 on the same Mac (Chrome 157, in a throwaway
+profile, muted; tables in `experiments/e3-web-overlay`), against the
+criteria below:
+1. 1080p60 for 60 s: 0 of 3,569 frames dropped by Chrome's own count,
+   same origin and through the header service worker. Met.
+2. First frame 9 to 27 ms (to the first frame Chrome counts); seeks 14 to
+   35 ms. Met.
+3. Not yet: a 10 minute run lost its window at 8.5 minutes; until then
+   the renderer stayed at 213 to 248 MB with no steady climb.
+4. Every playable tier A clip plays (H.264, HEVC, MP4, MOV) and matches
+   size, duration and tracks; rotation is applied but not reported, and
+   colour is unknown, as a browser does not say. Met.
+5. Through the service worker every request carried the header and a
+   `Range`; without it every clip ends in `Failed(Unauthorized)`. Met.
+6. Missing file `NotFound`, truncated `Decode` (after a fix: Chrome ends
+   such a file early instead of failing), random bytes and FFV1
+   `Unsupported`; no hang. Met.
+8 to 10 (pluggability, overlay, one app): not yet checked in Chrome by
+hand. Safari and Firefox: not yet run.
 
 macOS measured 2026-11-12 with the lab's bench (M4 Max, macOS 27.2; tables
 in `experiments/e1-avfoundation`), against the criteria below:
