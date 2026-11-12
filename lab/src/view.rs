@@ -196,12 +196,21 @@ impl LabView {
                     .flex_col()
                     .gap_1()
                     .flex_1()
-                    .min_h_0()
+                    // A small window still shows a few clips; the stats
+                    // give way first.
+                    .min_h(px(CLIPS_MIN_HEIGHT))
                     .overflow_y_scroll()
                     .children(clips),
             )
             .child(heading("Stats"))
-            .child(self.stats(cx))
+            .child(
+                div()
+                    .id("stats")
+                    .flex_shrink(1.)
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(self.stats(cx)),
+            )
     }
 
     fn stats(&self, cx: &App) -> Div {
@@ -311,6 +320,7 @@ impl LabView {
         let settings = self.settings;
         div()
             .flex()
+            .flex_wrap()
             .flex_none()
             .items_center()
             .gap_1()
@@ -318,6 +328,10 @@ impl LabView {
             .bg(rgb(PANEL))
             .child(
                 button("play", if paused { "Play" } else { "Pause" }, false)
+                    // The same width either way, so the row does not jump.
+                    .w(px(72.))
+                    .flex()
+                    .justify_center()
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_play(cx))),
             )
             .child(
@@ -369,8 +383,18 @@ impl LabView {
 impl Render for LabView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(playing) = &mut self.playing {
-            let presented = playing.player.read(cx).stats().frames_presented;
-            playing.meter.rendered(presented);
+            let player = playing.player.read(cx);
+            let presented = player.stats().frames_presented;
+            if matches!(
+                player.state(),
+                PlaybackState::Playing | PlaybackState::Buffering
+            ) {
+                playing.meter.rendered(presented);
+            } else {
+                // Renders are rare while nothing moves; rates measured
+                // across a pause would be meaningless.
+                playing.meter.idle(presented);
+            }
         }
         let stage = div().flex_1().min_h_0().bg(rgb(0x000000));
         let stage = match self.player() {
@@ -397,6 +421,8 @@ impl Render for LabView {
     }
 }
 
+/// About three rows of the clip list.
+const CLIPS_MIN_HEIGHT: f32 = 96.;
 const BACKGROUND: u32 = 0x16181d;
 const PANEL: u32 = 0x1f2229;
 const SELECTED: u32 = 0x2f5fd0;
@@ -506,6 +532,21 @@ impl Meter {
                 presented_at_start: presented,
             };
         }
+    }
+
+    /// Forgets the frame rates and starts a new window from now: called
+    /// while the media is not moving.
+    fn idle(&mut self, presented: u64) {
+        if self.first_frame.is_none() && presented > 0 {
+            self.first_frame = Some(self.opened.elapsed());
+        }
+        self.video_fps = None;
+        self.window_fps = None;
+        self.window = RateWindow {
+            since: Instant::now(),
+            renders: 0,
+            presented_at_start: presented,
+        };
     }
 
     fn seek_started(&mut self) {
