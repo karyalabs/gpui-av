@@ -43,6 +43,7 @@ for one thread. To start one, give the thread this repo and a prompt like:
 | E3, E4 | A browser; Chrome works in a cloud container, Firefox and Safari need a real machine |
 | E5 | Linux with a Vulkan GPU; it patches gpui-pre-wgpu locally |
 | E6 | Done |
+| L0 | Any desktop for the app; a Jellyfin server for that source (optional) |
 
 Two traps from E6: test clips come from `scripts/make-clips.sh` (needs
 ffmpeg with libx264), and in cloud sessions the sandbox may refuse to build
@@ -141,13 +142,18 @@ of them is a valid outcome of the experiments.
 ```
 
 - **Backend.** Opens a source (file path or URL with auth headers), owns
-  decode, audio output and the clock, and reports state. Backends:
+  decode, audio output and the clock, and reports state. Backends are
+  pluggable: each platform has a default, and an app can pick another one
+  (or bring its own) through the public `Backend` trait, without platform
+  types or `unsafe` in that trait. Backends:
   - macOS: `AVPlayer` + `AVPlayerItemVideoOutput`, giving `CVPixelBuffer`s.
   - Linux: GStreamer `playbin` with an `appsink`, loaded at run time so the
     app still starts without GStreamer; without it, fall back to opening the
     file in the system player.
   - Web: an `HTMLVideoElement`. Later, WebCodecs `VideoDecoder` plus a Rust
-    MP4 demuxer for frames inside the canvas.
+    MP4 demuxer for frames inside the canvas. Mediabunny (a demuxer and
+    WebCodecs wrapper) is a candidate for that later web backend; not
+    looked at yet.
 - **Presenter.** Picks the cheapest path the platform has: `surface` on
   macOS; `RenderImage` on Linux; a DOM `<video>` placed over the element's
   bounds on the web (first cut; menus cannot draw over it). Zero-copy
@@ -190,11 +196,59 @@ question; when it is done, the answer is folded into this spec.
 | E5 | Zero-copy on wgpu: implement `PrimitiveBatch::Surfaces` (NV12) in gpui-pre-wgpu | Patch works locally; decide whether to propose it to Zed |
 | E6 | Can we build on gpui-video-player or alhazen instead of writing backends? | **Done 2026-11-12: no; reuse ideas.** See `experiments/e6-existing-crates` |
 
+| L0 | Build `gpui-av-lab`, the playground and benchmark app (section 5.1) | Interactive mode and `--bench` play the tier A corpus from local and HTTP sources |
+
 Order: E0 and E6 first (cheap, and they can cancel work), then E1 and E3
-(the two biggest user groups after the web), then E2, E4 and E5.
+(the two biggest user groups after the web), then E2, E4 and E5. L0 starts
+with E1: its first backend is the E1 code, and every later experiment
+reports its numbers through `--bench`.
 
 Test clips come from `scripts/make-clips.sh` (ffmpeg's `testsrc2` and `sine`
 sources) rather than being committed; the repo ignores video files.
+
+### 5.1 The playground: `gpui-av-lab`
+
+One app in this repo (`lab/`) is where gpui-av gets tried and measured. It
+is a test bench, not a product: no posters, resume, subtitles or track
+picking.
+
+- **Interactive mode.** A clip list, the player, and a stats overlay:
+  backend, presenter, fps, dropped frames, A/V drift, colour range and
+  matrix. The backend can be switched at run time, which also exercises the
+  pluggable `Backend` trait.
+- **`--bench` mode.** Plays a list of clips without a person and writes JSON
+  per clip and backend: time to first frame, seek time, CPU, memory, dropped
+  frames, A/V drift, and whether the reported metadata matched the
+  manifest. Experiment READMEs quote these numbers.
+- **Sources** are pluggable too: a local folder; plain HTTP with request
+  headers (the Matty case: authenticated file URLs with range requests);
+  and a Jellyfin server. Jellyfin is only used for direct play
+  (`/Videos/{id}/stream?static=true` with its token header), and the test
+  user has transcoding and remuxing turned off, so a failure shows our
+  decoder coverage instead of being hidden by the server. HLS stays a
+  non-goal.
+
+**Corpus.** A manifest (in the repo) lists every clip with its expected
+container, codec, size, frame rate, colour range, matrix, transfer,
+rotation and duration, so the bench checks correctness as well as speed.
+No video files are committed: synthetic clips come from
+`scripts/make-clips.sh`, and public clips (Blender open films and similar)
+are listed by URL and SHA-256 and fetched by a script. Arya hosts the same
+files in Jellyfin.
+
+- **Tier A, Matty-like (the default bench set).** Short MP4 and MOV from
+  phones and screen recorders: H.264 and HEVC, portrait and rotation tags,
+  variable frame rate, no audio, audio only, moov at the end vs faststart.
+  E0 refines this tier from real attachments.
+- **Tier B, coverage.** VP9 and AV1 (WebM and MP4), 4K and 60 fps, 10-bit,
+  HDR10 and HLG, full range, BT.601/709/2020, odd sizes, non-square pixels,
+  fragmented MP4, MKV, several audio tracks and 5.1, long files for seeking,
+  truncated and corrupt files. Failures here are expected on some backends
+  (AVFoundation does not open MKV); the bench records them rather than
+  hiding them.
+
+A full Jellyfin client could be a showcase later, once gpui-av and the
+gpuicn controls are stable. It is not the playground.
 
 ## 6. Risks
 
@@ -210,6 +264,15 @@ sources) rather than being committed; the repo ignores video files.
 - **R5. Scope.** One maintainer plus Claude. Keep to the non-goals.
 
 ## 7. Decisions
+
+- 2026-11-12: the playground is `gpui-av-lab` (section 5.1), an interactive
+  and `--bench` app with pluggable sources, Jellyfin among them in direct
+  play only. Not a full Jellyfin client: that would skew the corpus toward
+  long MKV films (which AVFoundation and browsers cannot open), invite
+  server transcoding that hides decoder coverage, and be a second product
+  for one maintainer.
+- 2026-11-12: backends are pluggable and selectable by the app, with a
+  default per platform.
 
 - 2026-11-12: named `gpui-av` (repo `karyalabs/gpui-av`).
 - 2026-11-12 (E6): write our own backends; borrow from `gpui-video-player`
