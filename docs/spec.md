@@ -10,8 +10,9 @@ crate is unrelated macOS bindings.)
 ## 0. Start here
 
 **Where things stand (2026-11-13).** The proof of concept (section 5.2) has
-started: the workspace, the `gpui-av` API crate and the macOS backend
-(`gpui-av-avfoundation`) exist (section 4.2). E1 is answered: AVPlayer
+started: the workspace, the `gpui-av` API crate, the macOS backend
+(`gpui-av-avfoundation`) and the interactive part of the lab (`lab/`)
+exist (section 4.2). E1 is answered: AVPlayer
 drawn with `surface` plays 1080p60 with no dropped frames at about a fifth
 of a core. E6 is done (section 5): we write our own backends and
 borrow ideas from `gpui-video-player`. Everything else is open. When gpui-av works, its player
@@ -230,7 +231,19 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   A session is dropped with its player, which covers the player going away.
 - **Stats.** `Session::stats` reports frames presented and dropped (zero
   for a session that cannot tell); `VideoPlayer::stats` passes them on for
-  the lab's overlay and bench.
+  the lab's stats panel and bench, and keeps the last counts after a
+  failure. `Backend::presenter` names how frames reach the screen
+  (`surface`, `image`, `overlay`).
+- **The lab (L0, first part).** `lab/` is `gpui-av-lab`: a clip list (files,
+  folders and URLs from the command line, plus built-in patterns), a
+  backend switcher, the player with transport buttons, and a stats panel.
+  The stats sit beside the picture, never over it, because on the web GPUI
+  cannot draw on top of the video. Its test-pattern backend
+  (`lab/src/test_pattern.rs`) uses only the public API: it draws a
+  synthetic picture with `paint_image` against the wall clock, and takes
+  sources such as `pattern://1920x1080?fps=60&duration=20`. The only
+  platform `cfg` in the lab is the list of backends (`lab/src/backends.rs`).
+  The manifest and `--bench` are the second part.
 - **macOS (E1).** GPUI's surface takes only full-range NV12 and converts
   with a fixed BT.601 matrix, so the AVFoundation backend asks
   `AVPlayerItemVideoOutput` to convert each frame to exactly that
@@ -329,9 +342,9 @@ gpuicn controls are stable. It is not the playground.
 
 ### 5.2 The proof of concept (POC)
 
-Status: agreed 2026-11-12. In progress: the workspace, the API crate and
-the macOS backend are in (section 4.2); the web backend and the lab are
-next. First macOS numbers, from E1's example rather than the bench
+Status: agreed 2026-11-12. In progress: the workspace, the API crate, the
+macOS backend and the interactive lab with its test-pattern backend are in
+(section 4.2); the bench and the web backend are next. First macOS numbers, from E1's example rather than the bench
 (M4 Max, 1080p60 H.264, local file): 0 of 3600 frames dropped in 60 s,
 time to first frame 195 to 240 ms, a seek settles in 85 ms; A/V drift not
 yet measured.

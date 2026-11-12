@@ -1,0 +1,29 @@
+[package]
+name = "gpui-av-lab"
+description = "The playground and benchmark app for gpui-av."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+gpui-av.workspace = true
+gpui.workspace = true
+gpui-platform.workspace = true
+image.workspace = true
+smallvec.workspace = true
+web-time.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui-av-avfoundation.workspace = true
+# Compile GPUI's Metal shaders at run time, so building needs no Metal
+# toolchain (Xcode 26+ downloads it separately).
+gpui-platform = { workspace = true, features = ["runtime_shaders"] }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
