@@ -46,7 +46,7 @@ impl Backend for WebBackend {
     }
 
     fn presenter(&self) -> &'static str {
-        "dom-overlay"
+        "overlay"
     }
 
     fn open(

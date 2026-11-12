@@ -226,9 +226,17 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   frames at all. While the state is `Playing` or `Buffering` the element
   asks for a new window frame after every paint; the session decides which
   decoded frame is due.
-- **Still to settle in E3:** how a session learns that its element left the
-  screen while the player lives on (the web overlay must be hidden then).
-  A session is dropped with its player, which covers the player going away.
+- **A session knows when its picture shows.** `Session::mount` is called
+  when the `video()` element starts showing the picture (it is on screen,
+  has an area, and the picture's size is known) and returns a guard that
+  the element keeps in GPUI's element state. GPUI drops that state at the
+  end of the first frame that does not draw the element, so the guard's
+  `Drop` is where a session takes down what it presents outside the
+  window's scene: the web backend hides its `<video>` there. A session is
+  dropped with its player, which covers the player going away.
+  `Placement::clip` is the part of the element the window lets show (a
+  scrolling parent may cut it); what a session paints into the window is
+  clipped already, and an overlay clips itself to it.
 - **Stats.** `Session::stats` reports frames presented and dropped (zero
   for a session that cannot tell); `VideoPlayer::stats` passes them on for
   the lab's stats panel and bench, and keeps the last counts after a
@@ -242,7 +250,8 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   (`lab/src/test_pattern.rs`) uses only the public API: it draws a
   synthetic picture with `paint_image` against the wall clock, and takes
   sources such as `pattern://1920x1080?fps=60&duration=20`. The only
-  platform `cfg` in the lab is the list of backends (`lab/src/backends.rs`).
+  platform `cfg` in the lab's view code is the list of backends
+  (`lab/src/backends.rs`).
 - **The bench (L0, second part).** `corpus/tier-a.json` is the manifest of
   the synthetic tier A corpus that `scripts/make-clips.sh` generates: each
   clip's size as shown, rotation, frame rate, duration, codecs, colour
@@ -264,6 +273,55 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   (`420f`, BT.601 colour properties). Rotated tracks go through an
   `AVVideoComposition`, since `paint_surface` cannot rotate. Request
   headers use `AVURLAssetHTTPHeaderFieldsKey` for now (section 6, R6).
+- **The web (E3).** `gpui-av-web` plays a URL with one `HTMLVideoElement`
+  per session, appended to the page and kept over the element's bounds
+  with `position: fixed`: `paint` turns the `Placement` into a CSS box and
+  a `clip-path`, measured against the window's canvas (found through the
+  window's raw handle), and touches the style only when it changes. The
+  element lets pointer events through to GPUI. The browser decodes, keeps
+  audio and video in step and presents frames on its own, so
+  `Stats::max_drift` is `None` and the frame counts come from
+  `getVideoPlaybackQuality()`. Limits: GPUI cannot draw over the picture,
+  and the overlay is not part of a canvas put into full screen.
+  - *Request headers.* A `<video>` element cannot send them. With
+    `WebBackend::with_service_worker(url)`, a source with headers plays
+    from a made-up same-origin URL that a service worker
+    (`gpui_av_web::SERVICE_WORKER_JS`, served by the app next to its page)
+    answers by fetching the real URL with the headers and the element's
+    `Range`. The worker keeps headers in memory only and asks the page for
+    them again after the browser restarts it. Without the worker
+    (`WebBackend::new()`, or a browser that will not run it) such a source
+    fails with `Unsupported`; headers are never dropped. The real server
+    must allow the page's origin (CORS) when it is another origin.
+  - *Errors.* A media element reports a 404, a 401 and an unknown format
+    all as "source not supported", so on an error the backend requests
+    the first byte of the URL itself and maps the HTTP status:
+    `NotFound`, `Unauthorized`, `Network`, and otherwise `Unsupported` or
+    `Decode` from the element's own code.
+  - *What a browser does not tell.* Colour range and matrix, and the
+    rotation tag (the browser applies it; the reported size is the
+    rotated one). Whether there is an audio track comes from the track
+    list (Safari), Firefox's flag, or Chrome's count of decoded audio
+    bytes.
+  - *Autoplay.* A browser refuses audible playback that no click or key
+    press led to; the session then reports `Paused` and logs why.
+  - *Cross-origin isolation.* GPUI's web build needs an isolated page
+    (COOP and COEP headers), under which another origin's media must be
+    served with CORS or `Cross-Origin-Resource-Policy`; the backend asks
+    for CORS when the page is isolated.
+- **The lab on the web.** `scripts/web serve [folder]` builds the lab for
+  `wasm32-unknown-unknown` (nightly toolchain, as gpuicn and Matty) and
+  serves it with `scripts/serve.py`, which also serves a folder of media
+  with range requests, and the same media under `/private/` behind a
+  bearer token. The page's query string is the command line
+  (`?bench=tier-a.json&base-url=clips/`, `?clip=<url>`, `?muted`); with no
+  clip it lists the served folder, so any folder of videos can be played.
+  An unattended run leaves its JSON on `window.gpuiAvLab` and offers it as
+  a download. The lab's stage has two more arrangements for testing a
+  presenter outside the scene: `Scroll` (the picture in a scrolling
+  column) and `Hide` (the element gone, the player alive). The lab's
+  entry (`lab/src/entry_native.rs`, `entry_web.rs`) and its backend list
+  are the only code that differs per platform.
 - **Media info** carries duration, natural size (as shown, rotation
   applied), the rotation tag, whether there is video and audio, and colour
   range and matrix as optional values: a backend leaves out what the
