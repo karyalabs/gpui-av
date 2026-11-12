@@ -1860,6 +1860,7 @@ dependencies = [
  "cpu-time",
  "gpui-av",
  "gpui-av-avfoundation",
+ "gpui-av-web",
  "gpui-pre",
  "gpui-pre-platform",
  "image",
@@ -1877,6 +1878,15 @@ dependencies = [
 [[package]]
 name = "gpui-av-web"
 version = "0.0.0"
+dependencies = [
+ "gpui-av",
+ "gpui-pre",
+ "js-sys",
+ "raw-window-handle",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
 
 [[package]]
 name = "gpui-pre"

@@ -17,6 +17,7 @@ gpui-av = { path = "crates/gpui-av" }
 gpui = { package = "gpui-pre", version = "=0.3.12", default-features = false }
 async-channel = { version = "2.5", default-features = false }
 gpui-av-avfoundation = { path = "crates/gpui-av-avfoundation" }
+gpui-av-web = { path = "crates/gpui-av-web" }
 gpui-platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["font-kit"] }
 # The versions GPUI itself uses, for building frames by hand.
 image = { version = "0.25.1", default-features = false }
