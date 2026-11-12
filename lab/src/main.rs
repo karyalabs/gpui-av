@@ -21,33 +21,27 @@
 mod backends;
 mod bench;
 mod clips;
+#[cfg_attr(target_family = "wasm", path = "entry_web.rs")]
+#[cfg_attr(not(target_family = "wasm"), path = "entry_native.rs")]
+mod entry;
 mod manifest;
 mod metrics;
 mod test_pattern;
 mod view;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{
-    App, AppContext, AsyncApp, Bounds, Entity, KeyBinding, TitlebarOptions, WindowBounds,
-    WindowOptions, actions, px, size,
+    App, AppContext, AsyncApp, Bounds, Entity, TitlebarOptions, WindowBounds, WindowOptions, px,
+    size,
 };
 use gpui_av::{Backend, Source};
-use serde::Serialize;
 
 use crate::bench::Job;
 use crate::clips::Clip;
 use crate::manifest::Manifest;
 use crate::view::{LabView, Settings};
-
-actions!(
-    lab,
-    [
-        /// Ends the app (Cmd-Q).
-        Quit
-    ]
-);
 
 const USAGE: &str = "\
 usage: gpui-av-lab [options] [file, folder or URL]...
@@ -75,7 +69,7 @@ struct Options {
     backend: Option<String>,
     muted: bool,
     looping: bool,
-    bench: Option<PathBuf>,
+    bench: Option<String>,
     clips: PathBuf,
     base_url: Option<String>,
     play_seconds: f64,
@@ -124,7 +118,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, String> {
             "--backend" => options.backend = Some(value("a name")?),
             "--muted" => options.muted = true,
             "--loop" => options.looping = true,
-            "--bench" => options.bench = Some(value("a manifest file")?.into()),
+            "--bench" => options.bench = Some(value("a manifest file")?),
             "--clips" => options.clips = value("a folder")?.into(),
             "--base-url" => options.base_url = Some(value("a URL")?),
             "--out" => options.out = Some(value("a file")?.into()),
@@ -194,7 +188,9 @@ struct Plan {
     out: Option<PathBuf>,
 }
 
-fn plan(options: Options) -> Result<Plan, String> {
+/// Decides what to run. `manifest` is the text of the `--bench` manifest,
+/// which the caller reads its own way (a file, or a fetch in a browser).
+fn plan(options: Options, manifest: Option<&str>) -> Result<Plan, String> {
     let mut backends = backends::all();
     let chosen = match options.backend.as_deref() {
         None | Some("all") => None,
@@ -218,10 +214,8 @@ fn plan(options: Options) -> Result<Plan, String> {
         ..Settings::default()
     };
 
-    let (clips, mode) = if let Some(path) = &options.bench {
-        let json = std::fs::read_to_string(path)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-        let manifest = Manifest::parse(&json)?;
+    let (clips, mode) = if options.bench.is_some() {
+        let manifest = Manifest::parse(manifest.ok_or("--bench needs its manifest")?)?;
         let clips = manifest_clips(&manifest, &options);
         let jobs = manifest
             .clips
@@ -277,21 +271,8 @@ fn plan(options: Options) -> Result<Plan, String> {
     })
 }
 
-/// Writes a report as JSON to the file or to standard output.
-fn write_report(report: &impl Serialize, out: Option<&Path>) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(report).map_err(|error| error.to_string())?;
-    match out {
-        Some(path) => std::fs::write(path, json + "\n")
-            .map_err(|error| format!("{}: {error}", path.display())),
-        None => {
-            println!("{json}");
-            Ok(())
-        }
-    }
-}
-
-/// Runs the unattended mode, writes its report and ends the process: with
-/// status 0 when everything passed, 1 when something did not.
+/// Runs the unattended mode and hands its report to the platform's entry,
+/// with whether everything passed.
 async fn run_unattended(
     view: Entity<LabView>,
     mode: Mode,
@@ -299,87 +280,75 @@ async fn run_unattended(
     out: Option<PathBuf>,
     cx: &mut AsyncApp,
 ) {
-    let (written, passed) = match mode {
+    let (json, passed) = match mode {
         Mode::Interactive => return,
         Mode::Bench { jobs, backends } => {
             let report = bench::run(&view, &jobs, &backends, play_seconds, cx).await;
-            eprintln!("bench: {} passed, {} failed", report.passed, report.failed);
+            let mut summary = format!("bench: {} passed, {} failed", report.passed, report.failed);
             for result in report.results.iter().filter(|result| !result.pass) {
-                eprintln!(
-                    "  {} on {}: {}",
+                summary += &format!(
+                    "\n  {} on {}: {}",
                     result.clip,
                     result.backend,
                     result.problems.join("; ")
                 );
             }
-            (write_report(&report, out.as_deref()), report.failed == 0)
+            entry::log(&summary);
+            (serde_json::to_string_pretty(&report), report.failed == 0)
         }
         Mode::Soak {
             job,
             backend,
             seconds,
         } => match bench::soak(&view, &job, backend, seconds, cx).await {
-            Some(report) => {
-                let passed = report.final_state == "Playing";
-                (write_report(&report, out.as_deref()), passed)
+            Some(report) => (
+                serde_json::to_string_pretty(&report),
+                report.final_state == "Playing",
+            ),
+            None => {
+                entry::log("the window closed during the soak");
+                return entry::finish(None, None, false);
             }
-            None => (Err("the window closed during the soak".to_string()), false),
         },
     };
-    if let Err(message) = &written {
-        eprintln!("{message}");
+    entry::finish(json.ok(), out.as_deref(), passed);
+}
+
+/// Opens the lab's window and starts what the plan says.
+fn launch(plan: Plan, cx: &mut App) {
+    let Plan {
+        backends,
+        clips,
+        settings,
+        mode,
+        play_seconds,
+        out,
+    } = plan;
+    let bounds = Bounds::centered(None, size(px(1280.), px(720.)), cx);
+    let unattended = !matches!(mode, Mode::Interactive);
+    let window = cx
+        .open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("gpui-av lab".into()),
+                    ..TitlebarOptions::default()
+                }),
+                ..WindowOptions::default()
+            },
+            // Unattended runs choose their own clips; nothing autoplays.
+            |_, cx| cx.new(|cx| LabView::new(backends, clips, settings, !unattended, cx)),
+        )
+        .expect("open the lab's window");
+    cx.activate(true);
+    if unattended && let Ok(view) = window.entity(cx) {
+        cx.spawn(async move |cx| run_unattended(view, mode, play_seconds, out, cx).await)
+            .detach();
     }
-    std::process::exit(if written.is_ok() && passed { 0 } else { 1 });
 }
 
 fn main() {
-    let plan = match parse(std::env::args().skip(1)).and_then(plan) {
-        Ok(plan) => plan,
-        Err(message) => {
-            eprintln!("{message}");
-            std::process::exit(2);
-        }
-    };
-    gpui_platform::application().run(move |cx: &mut App| {
-        let Plan {
-            backends,
-            clips,
-            settings,
-            mode,
-            play_seconds,
-            out,
-        } = plan;
-        // The lab is one window: closing it, or Cmd-Q, ends the app.
-        cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
-        cx.on_window_closed(|cx, _| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
-        })
-        .detach();
-        let bounds = Bounds::centered(None, size(px(1280.), px(720.)), cx);
-        let unattended = !matches!(mode, Mode::Interactive);
-        let window = cx
-            .open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some("gpui-av lab".into()),
-                        ..TitlebarOptions::default()
-                    }),
-                    ..WindowOptions::default()
-                },
-                // Unattended runs choose their own clips; nothing autoplays.
-                |_, cx| cx.new(|cx| LabView::new(backends, clips, settings, !unattended, cx)),
-            )
-            .expect("open the lab's window");
-        cx.activate(true);
-        if unattended && let Ok(view) = window.entity(cx) {
-            cx.spawn(async move |cx| run_unattended(view, mode, play_seconds, out, cx).await)
-                .detach();
-        }
-    });
+    entry::main();
 }
 
 #[cfg(test)]
@@ -442,7 +411,7 @@ mod tests {
             "bench.json",
         ]))
         .unwrap();
-        assert_eq!(options.bench, Some("corpus/tier-a.json".into()));
+        assert_eq!(options.bench.as_deref(), Some("corpus/tier-a.json"));
         assert_eq!(options.clips, PathBuf::from("/tmp/clips"));
         assert_eq!(options.play_seconds, 2.5);
         assert_eq!(options.out, Some("bench.json".into()));
@@ -480,19 +449,16 @@ mod tests {
 
     #[test]
     fn a_bench_runs_muted_on_the_first_backend_unless_told_otherwise() {
-        let manifest =
-            std::env::temp_dir().join(format!("lab-manifest-{}.json", std::process::id()));
-        std::fs::write(
-            &manifest,
-            r#"{"clips": [{"file": "a.mp4", "expect": "plays"}]}"#,
-        )
-        .unwrap();
         let bench = |backend: Option<&str>| {
-            plan(Options {
-                bench: Some(manifest.clone()),
+            let options = Options {
+                bench: Some("manifest.json".into()),
                 backend: backend.map(str::to_string),
                 ..Options::default()
-            })
+            };
+            plan(
+                options,
+                Some(r#"{"clips": [{"file": "a.mp4", "expect": "plays"}]}"#),
+            )
             .unwrap()
         };
 
@@ -513,17 +479,15 @@ mod tests {
             panic!("expected a bench");
         };
         assert_eq!(pattern.backends[backends[0]].name(), "test-pattern");
-        std::fs::remove_file(&manifest).unwrap();
     }
 
     #[test]
     fn an_unknown_backend_is_an_error_that_lists_the_real_ones() {
-        let error = plan(Options {
+        let options = Options {
             backend: Some("vlc".into()),
             ..Options::default()
-        })
-        .err()
-        .unwrap();
+        };
+        let error = plan(options, None).err().unwrap();
         assert!(error.contains("test-pattern"), "{error}");
     }
 }

@@ -1863,10 +1863,14 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
  "image",
+ "js-sys",
  "memory-stats",
  "serde",
  "serde_json",
  "smallvec",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "web-time",
 ]
 
