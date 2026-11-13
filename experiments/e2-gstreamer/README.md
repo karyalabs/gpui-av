@@ -83,6 +83,36 @@ process CPU in the bench measure the sandbox, not the backend. Time to
 first frame was 85 to 180 ms and seeks 80 to 380 ms. Real numbers need a
 Linux desktop with a GPU.
 
+## A Linux VM on a Mac (2026-11-13)
+
+Tried as a stand-in for a Linux desktop with a GPU: Lima 2.2.1 with
+krunkit 1.3.2 on an M4 Max (48 GB), Fedora 44 arm64, 8 cores, 16 GiB,
+GStreamer 1.28.9, full ffmpeg from RPM Fusion, and libkrun's Mesa
+25.3.6 from the `slp/mesa-libkrun-vulkan` COPR (Fedora's own Mesa gives no
+Venus device at all).
+
+- **GPUI cannot open a window there.** The Venus device ("Virtio-GPU
+  Venus (Apple M4 Max)", Vulkan 1.2) has no `VK_KHR_swapchain` and no
+  dma-buf export under krunkit, so wgpu picks it and panics creating the
+  swapchain, under Weston (headless) and Xvfb alike. Forcing llvmpipe
+  crashes inside LLVM 22's JIT. So the VM gives no window numbers.
+- **Decode and convert numbers do work** (`measure.py`, CPU ms per frame):
+
+| Clip | Decode | + convert (one thread) |
+|---|---|---|
+| H.264 1280x720 30 fps | 1.81 | +1.03 |
+| H.264 1920x1080 30 fps | 3.65 | +2.35 |
+| H.264 1920x1080 60 fps | 2.96 | +2.61 |
+| HEVC 1920x1080 30 fps | 4.54 | +2.50 |
+
+  Decoding is about 35 to 40% cheaper per frame than on the sandbox's
+  Xeon; the conversion to BGRA costs about twice as much (arm64, where
+  GStreamer's converter has less hand-tuned code). Either way the
+  conversion alone is half to two thirds of the decode cost.
+- A wgpu context that falls back to an adapter that can present (instead
+  of panicking on the first adapter) would make GPUI start on machines
+  like this one; a candidate patch for our GPUI.
+
 ## Next
 
 - The RenderImage path is correct and is the Linux default, but its
