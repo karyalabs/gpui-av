@@ -159,13 +159,19 @@ renderer was at 213 to 248 MB with no steady climb.
   shown (720x1280 for the rotated clip) without the tag itself, so
   `rotation` is unknown on the web.
 
+### A real pixel ratio change
+
+Checked by hand on 2026-11-13 (Arya): the lab's Chrome window, playing,
+dragged back and forth between the MacBook's 2x screen and a 1x external
+monitor, and stopped halfway across both. The picture stayed in place with
+no resize or shift. The misplaced picture seen once under emulation
+(table above) does not happen with real screens.
+
 ### Not measured
 
 - **Safari**: not run. It could not be opened without disturbing the
   Safari windows of the person using the Mac. A listed gap.
 - **Firefox**: not installed on this Mac.
-- **A real pixel ratio change**: only emulated (above); a window moved
-  between a 2x and a 1x screen is still to look at.
 - **CPU during the soak**: memory was sampled with `ps`; CPU was not
   noted.
 - **The Sintel trailer** (`scripts/fetch-real-clips.sh`): left for Arya to
@@ -179,9 +185,5 @@ renderer was at 213 to 248 MB with no steady climb.
 
 ## Next
 
-- Spec: E3's Chrome half measured, apart from a real pixel ratio change;
-  Safari and Firefox still to run on a Mac where that is possible.
-- Check a move between a 2x and a 1x screen by hand. The backend places
-  the overlay from the canvas's measured box and the window's size each
-  time the element is painted, so it should follow; if it does not, the
-  fix is in the web backend.
+- Spec: E3 is done for Chrome (2026-11-13); Safari and Firefox still to
+  run on a Mac where that is possible.
