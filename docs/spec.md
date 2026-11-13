@@ -9,20 +9,22 @@ crate is unrelated macOS bindings.)
 
 ## 0. Start here
 
-**Where things stand (2026-11-13).** The proof of concept (section 5.2) has
-started: the workspace, the `gpui-av` API crate, the macOS backend
-(`gpui-av-avfoundation`) and the interactive part of the lab (`lab/`)
-exist (section 4.2). E1 is answered: AVPlayer
-drawn with `surface` plays 1080p60 with no dropped frames at about a fifth
-of a core. The web backend (E3) plays the whole tier A corpus in Chrome, with
-flat memory over 10 minutes and an overlay that follows resize and
-scroll; a window moved between screens of different pixel ratio, Safari and Firefox are still open. E6 is done (section 5): we write our own backends and
-borrow ideas from `gpui-video-player`. Everything else is open. When gpui-av works, its player
+**Where things stand (2026-11-13).** The proof of concept (section 5.2) is
+done: the workspace, the `gpui-av` API crate, the macOS backend
+(`gpui-av-avfoundation`), the web backend (`gpui-av-web`) and the lab
+(`lab/`) exist (section 4.2), and the tier A corpus plays through one API
+on macOS and in Chrome. E1 is answered: AVPlayer drawn with `surface`
+plays 1080p60 with no dropped frames at about a fifth of a core. The web
+backend (E3) plays the whole tier A corpus in Chrome, with flat memory
+over 10 minutes and an overlay that follows resize, scroll and a move
+between screens of different pixel ratio; Safari and Firefox are not run
+yet. E6 is done (section 5): we write our own backends and borrow ideas
+from `gpui-video-player`. The next milestone is Linux (E2). When gpui-av works, its player
 moves into gpuicn (Karya Labs' GPUI component library) as a component, and
 Matty uses it from there. Until then this repo stands alone: no other Karya
 Labs repo depends on it, and nothing here needs Matty or gpuicn to build.
 
-The first thing to build is the proof of concept in section 5.2: two
+The first thing built was the proof of concept in section 5.2: two
 platforms (macOS and the web), the real crate, the lab, and numbers.
 
 **Picking up work in a new thread.** Each experiment in section 5 is sized
@@ -446,15 +448,15 @@ question; when it is done, the answer is folded into this spec.
 | ID | Question | Done when |
 |---|---|---|
 | E0 | What do real Mattermost videos look like (containers, codecs, sizes, lengths)? | A table from a sample of real attachments |
-| E1 | macOS: does AVPlayer + `surface()` play 1080p60 smoothly inside a GPUI window? | A demo plays with sound; CPU and dropped frames measured. **Answered 2026-11-13: yes**, 0 of 3600 frames dropped at ~19% of one core; marked done with the POC. See `experiments/e1-avfoundation` |
+| E1 | macOS: does AVPlayer + `surface()` play 1080p60 smoothly inside a GPUI window? | A demo plays with sound; CPU and dropped frames measured. **Done 2026-11-13: yes**, 0 of 3600 frames dropped at ~19% of one core. See `experiments/e1-avfoundation` |
 | E2 | Linux: GStreamer + RenderImage at 1080p: what does the per-frame copy cost? | CPU, memory and dropped frames at 720p and 1080p |
-| E3 | Web: a DOM `<video>` overlay that tracks a GPUI element through scroll, resize and close | Works in Chrome, Firefox and Safari. **Chrome measured 2026-11-13:** tier A passes, memory flat over 10 minutes, overlay follows resize, scroll and an emulated pixel ratio change; a move between real screens, Safari and Firefox still to do. See `experiments/e3-web-overlay` |
+| E3 | Web: a DOM `<video>` overlay that tracks a GPUI element through scroll, resize and close | Works in Chrome, Firefox and Safari. **Done for Chrome 2026-11-13:** tier A passes, memory flat over 10 minutes, overlay follows resize, scroll and a window moved between a 2x and a 1x screen. Safari and Firefox are not run: a listed gap. See `experiments/e3-web-overlay` |
 | E4 | Web: WebCodecs frames drawn inside the canvas without an overlay | One clip plays in Chrome; cost measured against E3 |
 | E5 | Zero-copy on wgpu: implement `PrimitiveBatch::Surfaces` (NV12) in gpui-pre-wgpu | Patch works locally; decide whether to propose it to Zed |
 | E6 | Can we build on gpui-video-player or alhazen instead of writing backends? | **Done 2026-11-12: no; reuse ideas.** See `experiments/e6-existing-crates` |
 | E7 | Containers the platform will not open (MKV on AVFoundation and in browsers): our own Rust demuxer feeding VideoToolbox / WebCodecs (Mediabunny on the web), or an optional GStreamer backend on macOS? | The MKV clips in the corpus play on macOS and in Chrome through the chosen path; cost measured |
 | E8 | macOS: real HDR output. Route chosen 2026-11-13: an extended range path in our GPUI (section 4.3, patches 1 and 2). The alternative, a second presenter that lets macOS draw the video in its own layer over the element (`AVSampleBufferDisplayLayer` or `AVPlayerLayer`, placed as the web overlay is; GPUI cannot draw over it), is not scheduled. | An HDR10 and an HLG clip show with extended brightness on an XDR display through the chosen path; cost and limits recorded |
-| L0 | Build `gpui-av-lab`, the playground and benchmark app (section 5.1) | Interactive mode and `--bench` play the tier A corpus from local and HTTP sources |
+| L0 | Build `gpui-av-lab`, the playground and benchmark app (section 5.1) | Interactive mode and `--bench` play the tier A corpus from local and HTTP sources. **Done for tier A 2026-11-13**, natively and in a browser |
 
 Order: E0 and E6 first (cheap, and they can cancel work), then E1 and E3
 (the two biggest user groups after the web), then E2, E4 and E5. E7 follows E1
@@ -463,7 +465,8 @@ with E1: its first backend is the E1 code, and every later experiment
 reports its numbers through `--bench`.
 
 E1, E3 and that first slice of L0 together make the proof of concept
-(section 5.2), which comes before everything else that is still open.
+(section 5.2), which came before everything else and is done
+(2026-11-13).
 
 Test clips come from `scripts/make-clips.sh` (ffmpeg's `testsrc2` and `sine`
 sources) rather than being committed; the repo ignores video files.
@@ -529,9 +532,10 @@ gpuicn controls are stable. It is not the playground.
 
 ### 5.2 The proof of concept (POC)
 
-Status: agreed 2026-11-12. In progress: the workspace, the API crate, the
-macOS backend, the interactive lab with its test-pattern backend, the
+Status: agreed 2026-11-12, done 2026-11-13. The workspace, the API crate,
+the macOS backend, the interactive lab with its test-pattern backend, the
 bench, and the web backend with the lab's web build are in (section 4.2).
+Arya played their own videos in both and accepted it by eye and ear.
 Chrome measured 2026-11-12 on the same Mac (Chrome 157, in a throwaway
 profile, muted; tables in `experiments/e3-web-overlay`), against the
 criteria below:
@@ -557,8 +561,9 @@ criteria below:
    the stage's edges), hides with the element, and lets clicks and the
    wheel through to GPUI. Under an emulated pixel ratio change (headless
    Chrome, 2 to 1 to 1.5 and back) the picture stayed on the stage's
-   edges; a window moved between a 2x and a 1x screen is still to look at
-   by hand. Met but for that.
+   edges. By hand (Arya, 2026-11-13): the lab's Chrome window dragged
+   back and forth between the MacBook's 2x screen and a 1x monitor,
+   stopping halfway too, kept the picture in place with no resize. Met.
 10. The same lab code runs natively and in the page. Met.
 Safari: not run (it could not be opened without disturbing the Mac's
 user); Firefox: not installed. The soak and hand checks ran on a virtual
@@ -574,7 +579,7 @@ in `experiments/e1-avfoundation`), against the criteria below:
    player in a process; seeks 30 to 95 ms, file or local HTTP. Met.
 3. 10 minute loop of the 1080p60 clip: resident memory +1.1 MB with no
    trend, CPU 33% of a core (lab window included), 0.82% dropped, all in
-   the first and last 5 s. Met; the web half is open.
+   the first and last 5 s. Met; the web half is above.
 4. All 11 playable tier A clips match the manifest's size, rotation,
    duration, tracks, colour range and matrix. Met on macOS.
 5. Over local HTTP with a bearer token and range requests every clip
@@ -682,8 +687,11 @@ adjust them, in this file.
     build are run locally before a merge. Heavier CI comes back once
     there is more to protect.
 
-When the POC is done, E1 and E3 are marked done, L0 is marked done for
-tier A, and the next milestone is Linux (E2).
+The POC is done (2026-11-13): E1 and E3 are marked done, L0 is marked
+done for tier A, and the next milestone is Linux (E2). Gaps carried
+forward, none a blocker: Safari and Firefox not run, CPU during the Chrome
+soak not noted, and 3 to 4% dropped frames on the variable frame rate
+clip in Chrome, not yet explained.
 
 ## 6. Risks
 
@@ -712,6 +720,9 @@ tier A, and the next milestone is Linux (E2).
 
 ## 7. Decisions
 
+- 2026-11-13: the proof of concept (section 5.2) is done. Arya accepted
+  playback by eye and ear with their own videos and checked the web
+  overlay across two screens by hand. Next: Linux (E2).
 - 2026-11-13: Karya Labs keeps its own GPUI (section 4.3): a fork of Zed
   shipped under the gpui-pre crate names and versions, additive patches
   only, opted into with `[patch.crates-io]`, each patch also proposed to

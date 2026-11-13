@@ -5,9 +5,9 @@ decoders: AVFoundation on macOS, GStreamer on Linux, and the browser on the web.
 
 A Karya Labs community project; not part of or endorsed by Zed.
 
-**Status: experiment.** A proof of concept plays video on macOS and in
-Chrome through one API: the API crate, the macOS and web backends and the
-lab exist; Linux is next, and nothing is published. The plan, the open
+**Status: experiment.** The proof of concept is done: video plays on macOS
+and in Chrome through one API, with the API crate, the macOS and web
+backends and the lab; Linux is next, and nothing is published. The plan, the open
 questions and the experiments that answer them are in
 [docs/spec.md](docs/spec.md).
 
