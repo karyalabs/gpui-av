@@ -12,7 +12,9 @@ publish.workspace = true
 workspace = true
 
 [features]
-# Play through Karya Labs' GPUI (spec 4.3); see scripts/karya-gpui.
+# The workspace builds on Karya Labs' GPUI (spec 4.3), so the lab draws
+# through it by default; `--no-default-features` plays the stock way.
+default = ["karya-gpui"]
 karya-gpui = ["gpui-av-avfoundation/karya-gpui"]
 
 [dependencies]

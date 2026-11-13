@@ -1,10 +1,11 @@
 #!/bin/sh
-# Run a cargo command against Karya Labs' GPUI (spec 4.3) instead of stock
-# gpui-pre. Fetches karyalabs/zed, turns its patches into gpui-pre-named
-# crates with its karya/gpui-pre.py, and patches them in for this command
-# only, so Cargo.toml and Cargo.lock stay on stock gpui-pre.
+# Run a cargo command against a branch of Karya Labs' GPUI (spec 4.3),
+# such as a patch not yet published. The workspace already builds on the
+# published crates; this fetches karyalabs/zed, turns the branch into
+# gpui-pre-named crates with its karya/gpui-pre.py, and patches them in for
+# this command only, leaving Cargo.toml and Cargo.lock as they are.
 #
-#   scripts/karya-gpui run -p gpui-av-lab --features karya-gpui -- clip.mp4
+#   KARYA_GPUI_REF=my-branch scripts/karya-gpui run -p gpui-av-lab -- clip.mp4
 #
 # KARYA_GPUI_REF picks the karyalabs/zed branch (default gpui-pre/0.3.12).
 set -eu

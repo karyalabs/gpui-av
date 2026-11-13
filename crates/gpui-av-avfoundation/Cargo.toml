@@ -14,7 +14,8 @@ workspace = true
 [features]
 # Draw frames through Karya Labs' GPUI (spec 4.3): 10-bit, colour-tagged
 # frames and HDR. Needs the app to patch gpui-pre-apple and gpui-pre-macos
-# with the crates from karyalabs/zed; on stock gpui-pre every frame fails
+# with the crates on karyalabs/zed's crates/gpui-pre-<version> branch (as
+# this workspace's Cargo.toml does); on stock gpui-pre every frame fails
 # to draw.
 karya-gpui = []
 

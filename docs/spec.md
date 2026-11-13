@@ -388,9 +388,13 @@ so on; 0.3.12 is Zed at `d2a4fb6`. gpui-av, gpuicn, Matty and gpui-kit
   Nothing that builds on gpui-pre may break on ours.
 - gpui-av builds on stock gpui-pre and keeps today's paths there. The fast
   paths sit behind the cargo feature `karya-gpui`, which an app turns on
-  together with the patch; `scripts/karya-gpui` runs any cargo command
-  against our GPUI without touching `Cargo.toml` or `Cargo.lock`. No user
-  is forced onto our GPUI.
+  together with the patch. No user is forced onto our GPUI.
+- Karya Labs repos use our GPUI by default (Arya, 2026-11-13): each
+  workspace's `[patch.crates-io]` takes the changed crates from the
+  `crates/gpui-pre-<version>` branch of karyalabs/zed, which
+  `karya/publish.sh` there regenerates after a patch merges. In this repo
+  the lab turns `karya-gpui` on by default, and `scripts/karya-gpui` runs
+  any cargo command against another karyalabs/zed branch.
 - Every patch is also proposed to Zed. When Zed merges it, we drop it, so
   the fork shrinks over time.
 - CI rebuilds the patch set against each new gpui-pre snapshot (the canary
