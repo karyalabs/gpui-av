@@ -140,7 +140,7 @@ renderer was at 213 to 248 MB with no steady climb.
 | Backend switch | test-pattern: no `<video>` in the page; web again: one, playing |
 | Play, Pause, -5 s | Each click reached GPUI and the element (paused, playing, `currentTime` 0) |
 | Autoplay without `?muted` | The clip stayed paused at 0.0 until a click on Play, then played (the tab was muted with `--mute-audio`, so nothing was heard) |
-| Pixel ratio change | Not verified. With `Emulation.setDeviceMetricsOverride` (2 to 1 and 1.5) GPUI's canvas kept its backing size and drew at the new scale while the overlay stayed where the old layout put it, so they no longer lined up. Emulation may not send the events a real move between screens does; the real test (a 2x and a 1x screen) is still to do |
+| Pixel ratio change | Emulated only. In headless Chrome 157 on the Mac and headless Chromium 153 on Linux, both started at a factor of 2 and stepped with `Emulation.setDeviceMetricsOverride` to 1, to 1.5 and back at 1280x720, the picture's edges matched the stage's in every screenshot (sidebar and picture together at 140 CSS px at 1, at 210 at 1.5). GPUI itself follows an emulated ratio late or not at all: its canvas keeps its backing size, Chromium 153 ignored the step to 1, and Chrome 157 kept the 1.5 layout back at 2. The overlay goes where GPUI last drew the element. One earlier screenshot, from the headful window on the virtual screen (override with zero size, at 1.5), showed GPUI's sidebar at the new scale and the picture still at the old place; nothing was read again after it, so it may have been caught in the middle of the change. Emulation is not a move between screens: dragging the window from a 2x screen to a 1x one is still to do |
 
 ### What it took
 
@@ -164,7 +164,10 @@ renderer was at 213 to 248 MB with no steady climb.
 - **Safari**: not run. It could not be opened without disturbing the
   Safari windows of the person using the Mac. A listed gap.
 - **Firefox**: not installed on this Mac.
-- **A real pixel ratio change** (above).
+- **A real pixel ratio change**: only emulated (above); a window moved
+  between a 2x and a 1x screen is still to look at.
+- **CPU during the soak**: memory was sampled with `ps`; CPU was not
+  noted.
 - **The Sintel trailer** (`scripts/fetch-real-clips.sh`): left for Arya to
   fetch and judge by eye and ear.
 
@@ -178,6 +181,7 @@ renderer was at 213 to 248 MB with no steady climb.
 
 - Spec: E3's Chrome half measured, apart from a real pixel ratio change;
   Safari and Firefox still to run on a Mac where that is possible.
-- Check a move between a 2x and a 1x screen by hand; if the overlay then
-  misaligns as under emulation, the web backend must follow the canvas's
-  pixel ratio.
+- Check a move between a 2x and a 1x screen by hand. The backend places
+  the overlay from the canvas's measured box and the window's size each
+  time the element is painted, so it should follow; if it does not, the
+  fix is in the web backend.
