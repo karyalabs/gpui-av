@@ -98,14 +98,49 @@ The variable frame rate clip shows 3 to 4% dropped in every run: Chrome's
 own counter, on a clip whose gaps are in the file. Not explained; it
 does not affect the constant rate clips.
 
+### The later runs: a virtual screen
+
+The Mac was in use, so the soak and the hand checks ran on a virtual
+1920x1080 HiDPI screen at 60 Hz (`scripts/virtual-display`), in a Chrome
+window that was never activated (`open -g`, driven through the DevTools
+protocol on a local port: navigation, clicks, the wheel, window bounds,
+screenshots). The first attempt put the virtual screen in a mirror set
+with the built-in display and made it main; it was removed within a
+minute. The second un-mirrored it at once, for the session only, and the
+real screens kept their origins, modes and the main display throughout
+(checked before, during and after).
+
+Validated against the real screen with the same bench: the page was
+`visible`, `requestAnimationFrame` ran at 61 to 70 a second, all 15 clips
+passed, and 1080p60 showed 59.99 fps with 0 dropped. But GPUI's canvas
+drew only 25 to 27 frames a second there (120 on the focused real
+screen, 30 on the real screen unfocused): the window never has focus.
+Two clips counted 1.3 and 2.7% dropped that did not on the real screen.
+So frame counts from the virtual screen are not published as results;
+it was used for memory and for looking.
+
 ### Soak
 
-Not complete. A first 10 minute run of the 1080p60 clip lost its window
-at about 8.5 minutes (closed by hand on a Mac in use; Chrome kept running,
-no crash report), so no report was written. Until then, sampled with
-`ps` once a minute: the page's renderer process 213 to 248 MB with no
-steady climb (213, 233, 244, 242, 248, 243, 239, 236, 236 MB), the GPU
-process 117 to 122 MB. To be repeated.
+10 minutes of the 1080p60 clip, looping, on the virtual screen, sampled
+with `ps` once a minute. The page's renderer process: 245, 242, 253, 253,
+253, 253, 253, 254, 254, 254, 247 MB (flat after the third minute); the
+GPU process 110 to 112 MB. The report: 35,959 frames shown, 13 dropped
+by Chrome's count, still `Playing` at the end. An earlier run on the real
+screen lost its window at 8.5 minutes (closed by hand); until then the
+renderer was at 213 to 248 MB with no steady climb.
+
+### Hand checks (virtual screen, through the DevTools protocol)
+
+| Check | Seen |
+|---|---|
+| The picture sits in the stage | At 1600x813, 1100x613 and 1880x953 CSS px the `<video>` box was the stage's width, letterboxed to 16:9 inside it (for example x 280 to 1100, y 52.6 to 513.9 at 1100x613); screenshots show no gap or overlap |
+| Window resizes | The box followed each resize at once |
+| Scroll | The wheel over the video reached GPUI (pointer events pass through); the picture moved with the text (y 240 to -10) and got `clip-path: inset(10px 0 0)`: cut at the stage's top edge |
+| Hide | `display: none`; restored when shown again |
+| Backend switch | test-pattern: no `<video>` in the page; web again: one, playing |
+| Play, Pause, -5 s | Each click reached GPUI and the element (paused, playing, `currentTime` 0) |
+| Autoplay without `?muted` | The clip stayed paused at 0.0 until a click on Play, then played (the tab was muted with `--mute-audio`, so nothing was heard) |
+| Pixel ratio change | Not verified. With `Emulation.setDeviceMetricsOverride` (2 to 1 and 1.5) GPUI's canvas kept its backing size and drew at the new scale while the overlay stayed where the old layout put it, so they no longer lined up. Emulation may not send the events a real move between screens does; the real test (a 2x and a 1x screen) is still to do |
 
 ### What it took
 
@@ -124,11 +159,14 @@ process 117 to 122 MB. To be repeated.
   shown (720x1280 for the rotated clip) without the tag itself, so
   `rotation` is unknown on the web.
 
-### Not yet measured
+### Not measured
 
-- The 10 minute soak (above), Safari, and the interactive checks (resize,
-  a move between displays of different pixel ratio, Scroll and Hide,
-  backend switching, clicks through the video, the autoplay rule).
+- **Safari**: not run. It could not be opened without disturbing the
+  Safari windows of the person using the Mac. A listed gap.
+- **Firefox**: not installed on this Mac.
+- **A real pixel ratio change** (above).
+- **The Sintel trailer** (`scripts/fetch-real-clips.sh`): left for Arya to
+  fetch and judge by eye and ear.
 
 ### Limits
 
@@ -138,5 +176,8 @@ process 117 to 122 MB. To be repeated.
 
 ## Next
 
-- Spec: E3's Chrome half measured; Safari and Firefox results and the
-  interactive checks complete it.
+- Spec: E3's Chrome half measured, apart from a real pixel ratio change;
+  Safari and Firefox still to run on a Mac where that is possible.
+- Check a move between a 2x and a 1x screen by hand; if the overlay then
+  misaligns as under emulation, the web backend must follow the canvas's
+  pixel ratio.

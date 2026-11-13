@@ -14,8 +14,9 @@ started: the workspace, the `gpui-av` API crate, the macOS backend
 (`gpui-av-avfoundation`) and the interactive part of the lab (`lab/`)
 exist (section 4.2). E1 is answered: AVPlayer
 drawn with `surface` plays 1080p60 with no dropped frames at about a fifth
-of a core. The web backend (E3) plays the whole tier A corpus in Chrome;
-its soak, hand checks and Safari are next. E6 is done (section 5): we write our own backends and
+of a core. The web backend (E3) plays the whole tier A corpus in Chrome, with
+flat memory over 10 minutes and an overlay that follows resize and
+scroll; a real pixel ratio change, Safari and Firefox are still open. E6 is done (section 5): we write our own backends and
 borrow ideas from `gpui-video-player`. Everything else is open. When gpui-av works, its player
 moves into gpuicn (Karya Labs' GPUI component library) as a component, and
 Matty uses it from there. Until then this repo stands alone: no other Karya
@@ -339,7 +340,7 @@ question; when it is done, the answer is folded into this spec.
 | E0 | What do real Mattermost videos look like (containers, codecs, sizes, lengths)? | A table from a sample of real attachments |
 | E1 | macOS: does AVPlayer + `surface()` play 1080p60 smoothly inside a GPUI window? | A demo plays with sound; CPU and dropped frames measured. **Answered 2026-11-13: yes**, 0 of 3600 frames dropped at ~19% of one core; marked done with the POC. See `experiments/e1-avfoundation` |
 | E2 | Linux: GStreamer + RenderImage at 1080p: what does the per-frame copy cost? | CPU, memory and dropped frames at 720p and 1080p |
-| E3 | Web: a DOM `<video>` overlay that tracks a GPUI element through scroll, resize and close | Works in Chrome, Firefox and Safari. **In progress 2026-11-12:** tier A passes in Chrome; soak, interactive checks and Safari/Firefox to come. See `experiments/e3-web-overlay` |
+| E3 | Web: a DOM `<video>` overlay that tracks a GPUI element through scroll, resize and close | Works in Chrome, Firefox and Safari. **Chrome measured 2026-11-13:** tier A passes, memory flat over 10 minutes, overlay follows resize and scroll; a real pixel ratio change, Safari and Firefox still to do. See `experiments/e3-web-overlay` |
 | E4 | Web: WebCodecs frames drawn inside the canvas without an overlay | One clip plays in Chrome; cost measured against E3 |
 | E5 | Zero-copy on wgpu: implement `PrimitiveBatch::Surfaces` (NV12) in gpui-pre-wgpu | Patch works locally; decide whether to propose it to Zed |
 | E6 | Can we build on gpui-video-player or alhazen instead of writing backends? | **Done 2026-11-12: no; reuse ideas.** See `experiments/e6-existing-crates` |
@@ -429,8 +430,9 @@ criteria below:
    same origin and through the header service worker. Met.
 2. First frame 9 to 27 ms (to the first frame Chrome counts); seeks 14 to
    35 ms. Met.
-3. Not yet: a 10 minute run lost its window at 8.5 minutes; until then
-   the renderer stayed at 213 to 248 MB with no steady climb.
+3. 10 minute loop (on a virtual screen): the page's renderer 242 to
+   254 MB, flat after the third minute; GPU process 110 to 112 MB; still
+   playing. Met for memory; CPU cannot be read by the page.
 4. Every playable tier A clip plays (H.264, HEVC, MP4, MOV) and matches
    size, duration and tracks; rotation is applied but not reported, and
    colour is unknown, as a browser does not say. Met.
@@ -439,8 +441,18 @@ criteria below:
 6. Missing file `NotFound`, truncated `Decode` (after a fix: Chrome ends
    such a file early instead of failing), random bytes and FFV1
    `Unsupported`; no hang. Met.
-8 to 10 (pluggability, overlay, one app): not yet checked in Chrome by
-hand. Safari and Firefox: not yet run.
+8. The lab switches between the web and test-pattern backends at run time
+   in Chrome (the `<video>` element is removed and restored). Met.
+9. The overlay stays aligned through window resizes and a scroll (cut at
+   the stage's edges), hides with the element, and lets clicks and the
+   wheel through to GPUI. A pixel ratio change is not verified: under
+   emulation the overlay and the canvas went out of step, and a real move
+   between screens is still to test. Partly met.
+10. The same lab code runs natively and in the page. Met.
+Safari: not run (it could not be opened without disturbing the Mac's
+user); Firefox: not installed. The soak and hand checks ran on a virtual
+screen (`scripts/virtual-display`); its frame counts are not used, as an
+unfocused window's canvas draws at about 26 a second there.
 
 macOS measured 2026-11-12 with the lab's bench (M4 Max, macOS 27.2; tables
 in `experiments/e1-avfoundation`), against the criteria below:
