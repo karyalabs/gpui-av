@@ -131,7 +131,7 @@ Read from the `gpui-pre` 0.3.12 sources:
   WebGPU only.
 - A published crate cannot carry `[patch.crates-io]` to its users, so any
   renderer change either lands upstream (Zed, then the gpui-pre snapshot) or
-  every app patches GPUI itself.
+  every app patches GPUI itself. We do both: section 4.3.
 - Zed discussions #45866 (YUV surfaces on Linux/Windows) and #64849 (Windows
   external surfaces) have no maintainer reply.
 
@@ -328,6 +328,67 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   applied), whether there is video, and as optional values the rotation
   tag, whether there is audio, and colour range and matrix: a backend
   leaves out what its decoder did not report, and never guesses.
+
+### 4.3 Our GPUI (karyalabs/zed)
+
+Goal: gpui-av adds no latency of its own, and GPUI is never the reason a
+platform gets a slower or poorer picture. Several things gpui-av needs are
+renderer or core changes that we do not own (section 3.1), so Karya Labs
+keeps its own GPUI.
+
+**What gpui-pre is.** Zed stopped publishing `gpui` to crates.io at 0.2.2
+(October 2025). `gpui-pre` is a weekly republish of Zed's GPUI crates by
+huacnlee (Longbridge, author of gpui-component), named `gpui-pre`,
+`gpui-pre-apple` (Metal renderer), `gpui-pre-wgpu`, `gpui-pre-macos` and
+so on; 0.3.12 is Zed at `d2a4fb6`. gpui-av, gpuicn, Matty and gpui-kit
+(gpui-base, gpui-component) all build on it.
+
+**Shape.**
+
+- Source of truth: `karyalabs/zed`, a GitHub fork of `zed-industries/zed`.
+  For each gpui-pre snapshot we pin, a branch starts at the same Zed
+  commit and carries our patches on top. Real history keeps the weekly
+  rebase cheap and lets every patch go to Zed as a pull request.
+- Output: a script turns that branch into crates with **the gpui-pre names
+  and the same version**, the way gpui-pre itself is made. Apps opt in with
+  one `[patch.crates-io]` block; gpui-kit, gpuicn and Matty then build on
+  it unchanged. A fork under its own crate names would split every app off
+  from gpui-kit, so we never rename.
+- Patches are additive: new pixel formats, new surface kinds, opt-in modes.
+  Nothing that builds on gpui-pre may break on ours.
+- gpui-av builds on stock gpui-pre and keeps today's paths there. The fast
+  paths sit behind a cargo feature (name to be chosen) that an app turns on
+  together with the patch. No user is forced onto our GPUI.
+- Every patch is also proposed to Zed. When Zed merges it, we drop it, so
+  the fork shrinks over time.
+- CI rebuilds the patch set against each new gpui-pre snapshot (the canary
+  of R1) and runs the lab's bench on both stock and patched GPUI.
+
+**Patch list, in order.** Each item is tried as an experiment first.
+
+1. macOS video formats (`gpui-pre-apple`): accept 10-bit P010 and
+   limited-range NV12, and take matrix, range and transfer from the
+   frame's attachments instead of the shader's fixed BT.601 full range.
+   This also removes our conversion pass (section 7, 2026-11-13).
+2. macOS HDR (`gpui-pre-apple`): an EDR mode, on only while HDR video is
+   on screen: CAMetalLayer in RGBA16Float with an extended colour space
+   and `wantsExtendedDynamicRangeContent`, every pipeline built for that
+   format (about nine are fixed to BGRA8Unorm today), and PQ/HLG mapped to
+   the screen's EDR headroom in the video shader.
+3. A cross-platform surface type in core: today `PaintSurface` holds a
+   CVPixelBuffer and exists on macOS and iOS only.
+4. Linux zero-copy (`gpui-pre-wgpu`): draw `PrimitiveBatch::Surfaces`
+   from dmabuf planes through wgpu's `texture_from_dmabuf_fd`, so VA-API
+   frames show with no copy (E5).
+5. Web: draw a `VideoFrame` or `HTMLVideoElement` inside the canvas
+   through WebGPU external textures once wgpu releases them, which removes
+   the DOM overlay's limits (E4).
+6. Frame pacing: present at the video's own rate and report when a frame
+   actually reached the screen, for A/V sync and latency numbers.
+
+Inside gpui-av, the element already stops asking for frames when the
+backend does not need them (`Session::needs_frames`); idle cost is ours to
+fix and needs no GPUI change.
 
 ## 5. Experiments
 
@@ -577,8 +638,11 @@ tier A, and the next milestone is Linux (E2).
 - **R1. GPUI churn.** gpui-pre ships a new snapshot about weekly, and the
   existing video crates broke on exactly this. Keep the surface we touch
   small, and run a canary against new snapshots.
-- **R2. Renderer ownership.** Zero-copy outside macOS needs renderer changes
-  we do not own. Treat it as optional; nothing in goals 1 to 4 depends on it.
+- **R2. Renderer ownership.** HDR, zero-copy outside macOS and frame
+  pacing need GPUI changes we do not own. We carry them in our own GPUI
+  (section 4.3) and propose each to Zed; nothing in goals 1 to 4 depends
+  on an app using it. Cost: a weekly rebase onto each gpui-pre snapshot,
+  and review time upstream.
 - **R3. Small audience.** About 100 to 150 crates depend on GPUI. The aim is
   to serve all of them, not only Matty, so the API and backends are judged
   against general use; Matty is the first proof, not the bar.
@@ -593,6 +657,14 @@ tier A, and the next milestone is Linux (E2).
 
 ## 7. Decisions
 
+- 2026-11-13: Karya Labs keeps its own GPUI (section 4.3): a fork of Zed
+  shipped under the gpui-pre crate names and versions, additive patches
+  only, opted into with `[patch.crates-io]`, each patch also proposed to
+  Zed. gpui-av keeps working on stock gpui-pre. Chosen over patching only
+  the Metal renderer (too small: Linux and web need core changes) and over
+  a renamed fork (it would split apps off from gpui-kit, gpuicn and Matty).
+  Reason (Arya): gpui-av should add no latency and work for nearly anyone,
+  and GPUI must not become the bottleneck on any platform.
 - 2026-11-13 (E1): the macOS backend is AVPlayer + AVPlayerItemVideoOutput
   drawn with `paint_surface`, converting frames to full-range NV12 with the
   BT.601 matrix that GPUI's shader assumes; `MediaInfo.color` still reports
