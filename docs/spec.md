@@ -266,8 +266,8 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
 - **The bench (L0, second part).** `corpus/tier-a.json` is the manifest of
   the synthetic tier A corpus that `scripts/make-clips.sh` generates: each
   clip's size as shown, rotation, frame rate, duration, codecs, colour
-  range and matrix, and whether it must play or fail (and with which error
-  kinds). `gpui-av-lab --bench corpus/tier-a.json` plays every clip in the
+  range, matrix and transfer function, and whether it must play or fail
+  (and with which error kinds). `gpui-av-lab --bench corpus/tier-a.json` plays every clip in the
   lab's own window, muted, and writes JSON per clip and backend: outcome,
   time to first frame, seek time, frames shown and dropped, frame rate,
   drift, CPU, memory, what the backend reported, and how that compares

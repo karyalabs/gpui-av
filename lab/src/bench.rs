@@ -459,6 +459,7 @@ fn problems(
             ("tracks", checks.tracks),
             ("colour range", checks.color_range),
             ("colour matrix", checks.color_matrix),
+            ("transfer function", checks.color_transfer),
         ] {
             if check == Some(false) {
                 problems.push(format!("{name} does not match the manifest"));

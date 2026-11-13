@@ -12,7 +12,12 @@ FF=(ffmpeg -loglevel error -y)
 # enough to give anyone a headache during a long run.
 TONE=(-f lavfi -i "sine=frequency=440")
 AUDIO=(-af volume=0.05 -c:a aac)
-H264=(-c:v libx264 -pix_fmt yuv420p)
+# Colour: BT.709, limited range, stated in the stream. Some ffmpeg builds
+# (seen on a Mac) do not pass -color_primaries and -color_trc on to
+# libx264 and libx265, which left the clips without a transfer function,
+# so the encoders are told directly as well.
+X26_BT709="colorprim=bt709:transfer=bt709:colormatrix=bt709"
+H264=(-c:v libx264 -x264-params "$X26_BT709" -pix_fmt yuv420p)
 BT709=(-color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709)
 
 picture() { # <size> <rate>
@@ -49,7 +54,7 @@ rm "$OUT/rotate-source.mp4"
 # HEVC, tagged hvc1 as Apple devices write it and AVFoundation requires.
 ENCODERS="$(ffmpeg -hide_banner -encoders 2>/dev/null)"
 if grep -q libx265 <<<"$ENCODERS"; then
-  HEVC=(-c:v libx265 -x265-params log-level=error -pix_fmt yuv420p)
+  HEVC=(-c:v libx265 -x265-params "log-level=error:$X26_BT709" -pix_fmt yuv420p)
 else
   HEVC=(-c:v hevc_videotoolbox -q:v 60 -pix_fmt yuv420p)
 fi
