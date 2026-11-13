@@ -144,9 +144,13 @@ impl Expected {
             size,
             rotation: self
                 .rotation
-                .map(|expected| info.rotation.degrees() == expected),
+                .and_then(|expected| info.rotation.map(|rotation| rotation.degrees() == expected)),
             duration,
-            tracks: Some(info.has_video == has_video && info.has_audio == has_audio),
+            tracks: if info.has_video == has_video {
+                info.has_audio.map(|reported| reported == has_audio)
+            } else {
+                Some(false)
+            },
             color_range: range,
             color_matrix: matrix,
         }
@@ -195,9 +199,9 @@ mod tests {
         let info = MediaInfo {
             duration: Some(Duration::from_millis(10_033)),
             natural_size: Some(size(720, 1280)),
-            rotation: Rotation::Cw90,
+            rotation: Some(Rotation::Cw90),
             has_video: true,
-            has_audio: true,
+            has_audio: Some(true),
             color: ColorInfo {
                 range: Some(ColorRange::Limited),
                 matrix: Some(ColorMatrix::Bt709),
@@ -219,11 +223,14 @@ mod tests {
 
     #[test]
     fn mismatches_and_unknowns_are_told_apart() {
-        // A backend that did not apply the rotation and cannot see colour.
+        // A backend that did not apply the rotation, missed the audio and
+        // cannot see colour.
         let info = MediaInfo {
             duration: Some(Duration::from_secs(12)),
             natural_size: Some(size(1280, 720)),
+            rotation: Some(Rotation::None),
             has_video: true,
+            has_audio: Some(false),
             ..MediaInfo::default()
         };
         let checks = entry("h264-1280x720-rotate90.mp4").check(&info);
@@ -244,7 +251,7 @@ mod tests {
     fn audio_only_expects_no_picture() {
         let info = MediaInfo {
             duration: Some(Duration::from_secs(10)),
-            has_audio: true,
+            has_audio: Some(true),
             ..MediaInfo::default()
         };
         let checks = entry("aac-audio-only.m4a").check(&info);

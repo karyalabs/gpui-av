@@ -9,3 +9,4 @@
 *.m4a
 *.m4v
 /clips
+__pycache__/

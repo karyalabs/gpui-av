@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -279,6 +280,10 @@ impl VideoPlayer {
             self.state,
             PlaybackState::Playing | PlaybackState::Buffering
         )
+    }
+
+    pub(crate) fn mount(&mut self) -> Option<Box<dyn Any>> {
+        self.session.as_mut().and_then(|session| session.mount())
     }
 
     pub(crate) fn paint(&mut self, placement: Placement, window: &mut Window, cx: &mut App) {

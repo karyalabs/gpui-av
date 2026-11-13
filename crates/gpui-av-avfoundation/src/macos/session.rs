@@ -378,7 +378,11 @@ impl Inner {
         if !loaded.info.has_video {
             self.awaiting_frame = None;
         }
-        if loaded.info.rotation != Rotation::None {
+        if loaded
+            .info
+            .rotation
+            .is_some_and(|rotation| rotation != Rotation::None)
+        {
             // AVPlayerItemVideoOutput hands out frames as stored; a video
             // composition built from the asset applies the track's rotation.
             // SAFETY: the asset is loaded, so this does not block for long.

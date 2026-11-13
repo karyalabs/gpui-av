@@ -13,6 +13,12 @@ pub fn all() -> Vec<Rc<dyn Backend>> {
     vec![
         #[cfg(target_os = "macos")]
         Rc::new(gpui_av_avfoundation::AvFoundationBackend::new()),
+        // The worker sends the request headers a `<video>` element cannot;
+        // scripts/web puts its file next to the page.
+        #[cfg(target_family = "wasm")]
+        Rc::new(gpui_av_web::WebBackend::with_service_worker(
+            "gpui-av-sw.js",
+        )),
         Rc::new(TestPatternBackend),
     ]
 }

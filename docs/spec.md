@@ -14,7 +14,9 @@ started: the workspace, the `gpui-av` API crate, the macOS backend
 (`gpui-av-avfoundation`) and the interactive part of the lab (`lab/`)
 exist (section 4.2). E1 is answered: AVPlayer
 drawn with `surface` plays 1080p60 with no dropped frames at about a fifth
-of a core. E6 is done (section 5): we write our own backends and
+of a core. The web backend (E3) plays the whole tier A corpus in Chrome, with
+flat memory over 10 minutes and an overlay that follows resize and
+scroll; a window moved between screens of different pixel ratio, Safari and Firefox are still open. E6 is done (section 5): we write our own backends and
 borrow ideas from `gpui-video-player`. Everything else is open. When gpui-av works, its player
 moves into gpuicn (Karya Labs' GPUI component library) as a component, and
 Matty uses it from there. Until then this repo stands alone: no other Karya
@@ -226,9 +228,17 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   frames at all. While the state is `Playing` or `Buffering` the element
   asks for a new window frame after every paint; the session decides which
   decoded frame is due.
-- **Still to settle in E3:** how a session learns that its element left the
-  screen while the player lives on (the web overlay must be hidden then).
-  A session is dropped with its player, which covers the player going away.
+- **A session knows when its picture shows.** `Session::mount` is called
+  when the `video()` element starts showing the picture (it is on screen,
+  has an area, and the picture's size is known) and returns a guard that
+  the element keeps in GPUI's element state. GPUI drops that state at the
+  end of the first frame that does not draw the element, so the guard's
+  `Drop` is where a session takes down what it presents outside the
+  window's scene: the web backend hides its `<video>` there. A session is
+  dropped with its player, which covers the player going away.
+  `Placement::clip` is the part of the element the window lets show (a
+  scrolling parent may cut it); what a session paints into the window is
+  clipped already, and an overlay clips itself to it.
 - **Stats.** `Session::stats` reports frames presented and dropped (zero
   for a session that cannot tell); `VideoPlayer::stats` passes them on for
   the lab's stats panel and bench, and keeps the last counts after a
@@ -242,7 +252,8 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   (`lab/src/test_pattern.rs`) uses only the public API: it draws a
   synthetic picture with `paint_image` against the wall clock, and takes
   sources such as `pattern://1920x1080?fps=60&duration=20`. The only
-  platform `cfg` in the lab is the list of backends (`lab/src/backends.rs`).
+  platform `cfg` in the lab's view code is the list of backends
+  (`lab/src/backends.rs`).
 - **The bench (L0, second part).** `corpus/tier-a.json` is the manifest of
   the synthetic tier A corpus that `scripts/make-clips.sh` generates: each
   clip's size as shown, rotation, frame rate, duration, codecs, colour
@@ -264,10 +275,59 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   (`420f`, BT.601 colour properties). Rotated tracks go through an
   `AVVideoComposition`, since `paint_surface` cannot rotate. Request
   headers use `AVURLAssetHTTPHeaderFieldsKey` for now (section 6, R6).
+- **The web (E3).** `gpui-av-web` plays a URL with one `HTMLVideoElement`
+  per session, appended to the page and kept over the element's bounds
+  with `position: fixed`: `paint` turns the `Placement` into a CSS box and
+  a `clip-path`, measured against the window's canvas (found through the
+  window's raw handle), and touches the style only when it changes. The
+  element lets pointer events through to GPUI. The browser decodes, keeps
+  audio and video in step and presents frames on its own, so
+  `Stats::max_drift` is `None` and the frame counts come from
+  `getVideoPlaybackQuality()`. Limits: GPUI cannot draw over the picture,
+  and the overlay is not part of a canvas put into full screen.
+  - *Request headers.* A `<video>` element cannot send them. With
+    `WebBackend::with_service_worker(url)`, a source with headers plays
+    from a made-up same-origin URL that a service worker
+    (`gpui_av_web::SERVICE_WORKER_JS`, served by the app next to its page)
+    answers by fetching the real URL with the headers and the element's
+    `Range`. The worker keeps headers in memory only and asks the page for
+    them again after the browser restarts it. Without the worker
+    (`WebBackend::new()`, or a browser that will not run it) such a source
+    fails with `Unsupported`; headers are never dropped. The real server
+    must allow the page's origin (CORS) when it is another origin.
+  - *Errors.* A media element reports a 404, a 401 and an unknown format
+    all as "source not supported", so on an error the backend requests
+    the first byte of the URL itself and maps the HTTP status:
+    `NotFound`, `Unauthorized`, `Network`, and otherwise `Unsupported` or
+    `Decode` from the element's own code.
+  - *What a browser does not tell.* Colour range and matrix, and the
+    rotation tag (the browser applies it; the reported size is the
+    rotated one). Whether there is an audio track comes from the track
+    list (Safari), Firefox's flag, or Chrome's count of decoded audio
+    bytes.
+  - *Autoplay.* A browser refuses audible playback that no click or key
+    press led to; the session then reports `Paused` and logs why.
+  - *Cross-origin isolation.* GPUI's web build needs an isolated page
+    (COOP and COEP headers), under which another origin's media must be
+    served with CORS or `Cross-Origin-Resource-Policy`; the backend asks
+    for CORS when the page is isolated.
+- **The lab on the web.** `scripts/web serve [folder]` builds the lab for
+  `wasm32-unknown-unknown` (nightly toolchain, as gpuicn and Matty) and
+  serves it with `scripts/serve.py`, which also serves a folder of media
+  with range requests, and the same media under `/private/` behind a
+  bearer token. The page's query string is the command line
+  (`?bench=tier-a.json&base-url=clips/`, `?clip=<url>`, `?muted`); with no
+  clip it lists the served folder, so any folder of videos can be played.
+  An unattended run leaves its JSON on `window.gpuiAvLab` and offers it as
+  a download. The lab's stage has two more arrangements for testing a
+  presenter outside the scene: `Scroll` (the picture in a scrolling
+  column) and `Hide` (the element gone, the player alive). The lab's
+  entry (`lab/src/entry_native.rs`, `entry_web.rs`) and its backend list
+  are the only code that differs per platform.
 - **Media info** carries duration, natural size (as shown, rotation
-  applied), the rotation tag, whether there is video and audio, and colour
-  range and matrix as optional values: a backend leaves out what the
-  decoder did not report.
+  applied), whether there is video, and as optional values the rotation
+  tag, whether there is audio, and colour range and matrix: a backend
+  leaves out what its decoder did not report, and never guesses.
 
 ## 5. Experiments
 
@@ -280,7 +340,7 @@ question; when it is done, the answer is folded into this spec.
 | E0 | What do real Mattermost videos look like (containers, codecs, sizes, lengths)? | A table from a sample of real attachments |
 | E1 | macOS: does AVPlayer + `surface()` play 1080p60 smoothly inside a GPUI window? | A demo plays with sound; CPU and dropped frames measured. **Answered 2026-11-13: yes**, 0 of 3600 frames dropped at ~19% of one core; marked done with the POC. See `experiments/e1-avfoundation` |
 | E2 | Linux: GStreamer + RenderImage at 1080p: what does the per-frame copy cost? | CPU, memory and dropped frames at 720p and 1080p |
-| E3 | Web: a DOM `<video>` overlay that tracks a GPUI element through scroll, resize and close | Works in Chrome, Firefox and Safari |
+| E3 | Web: a DOM `<video>` overlay that tracks a GPUI element through scroll, resize and close | Works in Chrome, Firefox and Safari. **Chrome measured 2026-11-13:** tier A passes, memory flat over 10 minutes, overlay follows resize, scroll and an emulated pixel ratio change; a move between real screens, Safari and Firefox still to do. See `experiments/e3-web-overlay` |
 | E4 | Web: WebCodecs frames drawn inside the canvas without an overlay | One clip plays in Chrome; cost measured against E3 |
 | E5 | Zero-copy on wgpu: implement `PrimitiveBatch::Surfaces` (NV12) in gpui-pre-wgpu | Patch works locally; decide whether to propose it to Zed |
 | E6 | Can we build on gpui-video-player or alhazen instead of writing backends? | **Done 2026-11-12: no; reuse ideas.** See `experiments/e6-existing-crates` |
@@ -361,8 +421,40 @@ gpuicn controls are stable. It is not the playground.
 ### 5.2 The proof of concept (POC)
 
 Status: agreed 2026-11-12. In progress: the workspace, the API crate, the
-macOS backend, the interactive lab with its test-pattern backend, and the
-bench are in (section 4.2); the web backend is next.
+macOS backend, the interactive lab with its test-pattern backend, the
+bench, and the web backend with the lab's web build are in (section 4.2).
+Chrome measured 2026-11-12 on the same Mac (Chrome 157, in a throwaway
+profile, muted; tables in `experiments/e3-web-overlay`), against the
+criteria below:
+1. 1080p60 for 60 s: 0 of 3,569 frames dropped by Chrome's own count,
+   same origin and through the header service worker. Met.
+2. First frame 9 to 27 ms (to the first frame Chrome counts); seeks 14 to
+   35 ms. Met.
+3. 10 minute loop (on a virtual screen): the page's renderer 242 to
+   254 MB, flat after the third minute; GPU process 110 to 112 MB; still
+   playing. Met for memory; CPU cannot be read by the page and was not
+   noted by hand.
+4. Every playable tier A clip plays (H.264, HEVC, MP4, MOV) and matches
+   size, duration and tracks; rotation is applied but not reported, and
+   colour is unknown, as a browser does not say. Met.
+5. Through the service worker every request carried the header and a
+   `Range`; without it every clip ends in `Failed(Unauthorized)`. Met.
+6. Missing file `NotFound`, truncated `Decode` (after a fix: Chrome ends
+   such a file early instead of failing), random bytes and FFV1
+   `Unsupported`; no hang. Met.
+8. The lab switches between the web and test-pattern backends at run time
+   in Chrome (the `<video>` element is removed and restored). Met.
+9. The overlay stays aligned through window resizes and a scroll (cut at
+   the stage's edges), hides with the element, and lets clicks and the
+   wheel through to GPUI. Under an emulated pixel ratio change (headless
+   Chrome, 2 to 1 to 1.5 and back) the picture stayed on the stage's
+   edges; a window moved between a 2x and a 1x screen is still to look at
+   by hand. Met but for that.
+10. The same lab code runs natively and in the page. Met.
+Safari: not run (it could not be opened without disturbing the Mac's
+user); Firefox: not installed. The soak and hand checks ran on a virtual
+screen (`scripts/virtual-display`); its frame counts are not used, as an
+unfocused window's canvas draws at about 26 a second there.
 
 macOS measured 2026-11-12 with the lab's bench (M4 Max, macOS 27.2; tables
 in `experiments/e1-avfoundation`), against the criteria below:
@@ -452,9 +544,11 @@ adjust them, in this file.
    are recorded on macOS. The page cannot read them on the web, so there
    they are noted by hand from Chrome's task manager.
 4. **Correctness.** Every tier A clip plays on both platforms. Reported
-   size, rotation and duration match the manifest on both; colour range
-   and matrix match on macOS, and are reported as unknown on the web,
-   where `<video>` does not expose them.
+   size (as shown, so with the rotation applied) and duration match the
+   manifest on both; the rotation tag, colour range and matrix match on
+   macOS, and are reported as unknown on the web, where `<video>` does
+   not expose them (amended 2026-11-13: the rotation tag joined that
+   list; the rotated size still proves the browser applied it).
 5. **HTTP.** A source with an auth header and range requests plays from a
    local test server on macOS, and a 401 ends in `Failed`. On the web, the
    same source either plays or is refused with a clear error, as settled

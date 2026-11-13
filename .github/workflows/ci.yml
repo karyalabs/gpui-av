@@ -49,10 +49,37 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked
       - run: cargo test --workspace --locked
+      - run: python3 scripts/test-serve.py
       # The lab is left out: GPUI's web platform needs the nightly web
-      # toolchain, which arrives with the web backend (E3).
+      # toolchain, which the `web` job has.
       - name: Check for the web
         run: cargo clippy --workspace --exclude gpui-av-lab --locked --target wasm32-unknown-unknown
+
+  # The lab as a web page, built the way scripts/web serves it.
+  web:
+    needs: runners
+    runs-on: ${{ fromJSON(needs.runners.outputs.linux) }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: ${{ runner.environment != 'self-hosted' }}
+      - uses: karyalabs/.github/actions/self-hosted-prep@v1
+      - uses: karyalabs/.github/actions/rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-08-17
+          components: rust-src
+          targets: wasm32-unknown-unknown
+      - name: Install wasm-bindgen
+        run: |
+          version="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)"
+          name="wasm-bindgen-$version-x86_64-unknown-linux-musl"
+          curl -sSfL "https://github.com/rustwasm/wasm-bindgen/releases/download/$version/$name.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
+      - run: scripts/web build --dev
+        env:
+          GPUI_AV_WEB_RUSTFLAGS: -D warnings
 
   # The AVFoundation backend only builds on macOS. The example compiles
   # GPUI's shaders at run time, so no Metal toolchain is needed here.
@@ -72,7 +99,7 @@ jobs:
   # not report a failure.
   ci:
     if: ${{ !cancelled() }}
-    needs: [linux, macos]
+    needs: [linux, web, macos]
     runs-on: ubuntu-latest
     steps:
       - name: Every job passed

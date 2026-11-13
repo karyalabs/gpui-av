@@ -11,3 +11,49 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[dependencies]
+gpui-av.workspace = true
+gpui.workspace = true
+
+# The backend itself is browser only: on other targets this crate holds the
+# service worker's source and the parts that can be tested without a page.
+[target.'cfg(target_family = "wasm")'.dependencies]
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+js-sys.workspace = true
+# The canvas of a GPUI window is reached through its raw window handle;
+# this must be the version gpui-pre uses.
+raw-window-handle = "0.6"
+web-sys = { workspace = true, features = [
+    "AbortController",
+    "AbortSignal",
+    "CssStyleDeclaration",
+    "Document",
+    "DomException",
+    "DomRect",
+    "Element",
+    "Event",
+    "EventTarget",
+    "Headers",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "HtmlMediaElement",
+    "HtmlVideoElement",
+    "Location",
+    "MediaError",
+    "MessageEvent",
+    "MessagePort",
+    "Navigator",
+    "Node",
+    "Performance",
+    "RequestInit",
+    "RequestMode",
+    "Response",
+    "ServiceWorker",
+    "ServiceWorkerContainer",
+    "ServiceWorkerRegistration",
+    "Url",
+    "VideoPlaybackQuality",
+    "Window",
+    "console",
+] }

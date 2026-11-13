@@ -1,3 +1,5 @@
+use std::any::Any;
+
 use gpui::{
     App, Bounds, ContentMask, DevicePixels, Element, ElementId, Entity, GlobalElementId,
     InspectorElementId, IntoElement, LayoutId, ObjectFit, Pixels, Refineable, Size, Style,
@@ -51,8 +53,10 @@ impl Element for Video {
     type RequestLayoutState = ();
     type PrepaintState = ();
 
+    // The element keeps state from frame to frame (what the session
+    // returned from `mount`), so it needs an identity: its player's.
     fn id(&self) -> Option<ElementId> {
-        None
+        Some(ElementId::View(self.player.entity_id()))
     }
 
     fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
@@ -84,7 +88,7 @@ impl Element for Video {
 
     fn paint(
         &mut self,
-        _global_id: Option<&GlobalElementId>,
+        global_id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
@@ -96,17 +100,31 @@ impl Element for Video {
             let player = self.player.read(cx);
             (player.natural_size(), player.wants_frames())
         };
-        // Nothing to place until the size of the picture is known.
-        let Some(natural_size) = natural_size.filter(|size| size.width > 0 && size.height > 0)
-        else {
+        // Nothing to place until the size of the picture is known, or while
+        // the element has no area.
+        let picture = natural_size
+            .filter(|size| size.width > 0 && size.height > 0)
+            .filter(|_| bounds.size.width > Pixels::ZERO && bounds.size.height > Pixels::ZERO);
+        // The session is mounted while the picture shows. GPUI drops element
+        // state at the end of the first frame that does not ask for it,
+        // which is how the session also learns that the element left.
+        if let Some(global_id) = global_id {
+            window.with_element_state(global_id, |mounted: Option<Mounted>, _| {
+                let guard = match (mounted, picture) {
+                    (Some(Mounted(Some(guard))), Some(_)) => Some(guard),
+                    (_, Some(_)) => self.player.update(cx, |player, _| player.mount()),
+                    (_, None) => None,
+                };
+                ((), Mounted(guard))
+            });
+        }
+        let Some(natural_size) = picture else {
             return;
         };
-        if bounds.size.width <= Pixels::ZERO || bounds.size.height <= Pixels::ZERO {
-            return;
-        }
         let placement = Placement {
             bounds: fit(&self.object_fit, bounds, natural_size),
-            clip: bounds,
+            // What is visible of the element: a scrolling parent may cut it.
+            clip: bounds.intersect(&window.content_mask().bounds),
         };
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             self.player.update(cx, |player, cx| {
@@ -118,6 +136,10 @@ impl Element for Video {
         }
     }
 }
+
+/// What a session returned from `mount`, held while the element shows the
+/// picture.
+struct Mounted(Option<Box<dyn Any>>);
 
 impl IntoElement for Video {
     type Element = Self;

@@ -11,13 +11,16 @@ pub struct MediaInfo {
     /// The size of the picture as shown, in pixels: after the rotation tag
     /// and the pixel aspect ratio are applied. `None` when there is no video.
     pub natural_size: Option<Size<u32>>,
-    /// The rotation tag of the video track. The backend has already applied
-    /// it to the frames it draws and to `natural_size`.
-    pub rotation: Rotation,
+    /// The rotation tag of the video track; `None` when there is no video
+    /// or the backend cannot tell (a browser applies the tag without
+    /// saying what it was). Either way the backend has already applied it
+    /// to the frames it draws and to `natural_size`.
+    pub rotation: Option<Rotation>,
     /// Whether there is a video track.
     pub has_video: bool,
-    /// Whether there is an audio track.
-    pub has_audio: bool,
+    /// Whether there is an audio track; `None` when the backend cannot
+    /// tell (some browsers do not say).
+    pub has_audio: Option<bool>,
     /// How the video encodes colour.
     pub color: ColorInfo,
 }
