@@ -16,6 +16,10 @@ workspace = true
 # through it by default; `--no-default-features` plays the stock way.
 default = ["karya-gpui"]
 karya-gpui = ["gpui-av-avfoundation/karya-gpui"]
+# Linux frames as NV12 through Karya Labs' GPUI (E5). Off until the patched
+# gpui-pre-wgpu is published; try it with
+# `KARYA_GPUI_REF=<branch> scripts/karya-gpui build -p gpui-av-lab --features karya-gpui-linux`.
+karya-gpui-linux = ["gpui-av-gstreamer/karya-gpui"]
 
 [dependencies]
 gpui-av.workspace = true

@@ -3,17 +3,16 @@
 use std::cell::RefCell;
 use std::ffi::c_int;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use gpui::{App, Corners, RenderImage, Task, Window};
+use gpui::{App, Corners, Task, Window};
 use gpui_av::{
     Error, ErrorKind, EventSink, MediaInfo, Placement, PlaybackState, Rotation, Session, Stats,
 };
 
 use crate::ffi;
-use crate::pipeline::{Event, Pipeline};
+use crate::pipeline::{Event, Picture, Pipeline};
 
 /// How often the session reads the pipeline's bus. Frames do not wait for
 /// this: they reach the session from GStreamer's own thread.
@@ -59,9 +58,9 @@ struct Inner {
     rotation: Option<Rotation>,
     missing_plugin: Option<String>,
     /// The frame on screen, and its presentation time.
-    shown: Option<(Option<Duration>, Arc<RenderImage>)>,
-    /// Images to free from GPUI's atlas at the next paint.
-    retired: Vec<Arc<RenderImage>>,
+    shown: Option<(Option<Duration>, Picture)>,
+    /// Pictures to free from GPUI's atlas at the next paint.
+    retired: Vec<Picture>,
     presented: u64,
     replaced: u64,
     sink_dropped: u64,
@@ -372,7 +371,7 @@ impl Inner {
             let drift = position.abs_diff(pts);
             self.max_drift = Some(self.max_drift.unwrap_or_default().max(drift));
         }
-        if let Some((_, old)) = self.shown.replace((frame.pts, frame.image)) {
+        if let Some((_, old)) = self.shown.replace((frame.pts, frame.picture)) {
             self.retired.push(old);
         }
     }
@@ -472,24 +471,34 @@ impl Session for GstSession {
         inner.take_frame();
         let new_frame = inner.presented != shown;
         let started = Instant::now();
-        for image in inner.retired.drain(..) {
+        for picture in inner.retired.drain(..) {
             // Frees the old frame's texture; without this every frame
-            // would stay in GPUI's atlas.
-            if let Err(error) = window.drop_image(image) {
+            // would stay in GPUI's atlas. A video frame's textures belong
+            // to the renderer, which reuses them.
+            if let Picture::Image(image) = picture
+                && let Err(error) = window.drop_image(image)
+            {
                 log(&format!("could not free a frame: {error}"));
             }
         }
-        if let Some((_, image)) = &inner.shown
-            && let Err(error) = window.paint_image(
-                placement.bounds,
-                placement.bounds,
-                Corners::default(),
-                image.clone(),
-                0,
-                false,
-            )
-        {
-            log(&format!("could not draw a frame: {error}"));
+        match inner.shown.as_ref().map(|(_, picture)| picture) {
+            Some(Picture::Image(image)) => {
+                if let Err(error) = window.paint_image(
+                    placement.bounds,
+                    placement.bounds,
+                    Corners::default(),
+                    image.clone(),
+                    0,
+                    false,
+                ) {
+                    log(&format!("could not draw a frame: {error}"));
+                }
+            }
+            #[cfg(feature = "karya-gpui")]
+            Some(Picture::Video(frame)) => {
+                window.paint_video_frame(placement.bounds, frame.clone());
+            }
+            None => {}
         }
         if new_frame {
             inner.upload += started.elapsed();
@@ -517,10 +526,15 @@ impl Drop for GstSession {
         let per_frame =
             |total: Duration, count: u64| total.as_secs_f64() * 1000.0 / count.max(1) as f64;
         log(&format!(
-            "{copies} frames copied at {:.2} ms each; {} drawn, {:.2} ms each in paint_image",
+            "{copies} frames copied at {:.2} ms each; {} drawn, {:.2} ms each in {}",
             per_frame(copy, copies),
             inner.uploads,
             per_frame(inner.upload, inner.uploads),
+            if cfg!(feature = "karya-gpui") {
+                "paint_video_frame (NV12, no copy)"
+            } else {
+                "paint_image"
+            },
         ));
     }
 }
