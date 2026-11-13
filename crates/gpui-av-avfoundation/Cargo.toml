@@ -11,6 +11,13 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Draw frames through Karya Labs' GPUI (spec 4.3): 10-bit, colour-tagged
+# frames and HDR. Needs the app to patch gpui-pre-apple and gpui-pre-macos
+# with the crates from karyalabs/zed; on stock gpui-pre every frame fails
+# to draw.
+karya-gpui = []
+
 # Everything is macOS only: on other targets this is an empty library.
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui-av.workspace = true

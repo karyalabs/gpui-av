@@ -27,6 +27,7 @@ use objc2_core_video::{
     CVGetCurrentHostTime, CVPixelBuffer, kCVPixelBufferIOSurfacePropertiesKey,
     kCVPixelBufferMetalCompatibilityKey, kCVPixelBufferPixelFormatTypeKey,
     kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+    kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
 };
 use objc2_foundation::{
     NSDictionary, NSError, NSNotification, NSNotificationCenter, NSNumber, NSObjectProtocol,
@@ -177,11 +178,16 @@ impl AvSession {
     }
 }
 
-/// The settings for the frames GPUI draws. GPUI's Metal surface takes only
-/// full-range NV12 (`420f`), backed by an IOSurface, and converts it to
+/// The settings for the frames GPUI draws. Stock GPUI's Metal surface takes
+/// only full-range NV12 (`420f`), backed by an IOSurface, and converts it to
 /// RGB with the BT.601 matrix, so the output asks AVFoundation to convert
-/// every frame to exactly that.
+/// every frame to exactly that. Karya Labs' GPUI (feature `karya-gpui`,
+/// spec 4.3) takes 10-bit frames with their own colour tags instead, so
+/// frames keep their depth, matrix and HDR transfer.
 fn output_settings() -> Retained<NSDictionary<NSString, AnyObject>> {
+    if cfg!(feature = "karya-gpui") {
+        return native_output_settings();
+    }
     // SAFETY: CoreVideo's keys are CFStrings, toll-free bridged to
     // NSString; AVFoundation's keys are constant NSStrings.
     unsafe {
@@ -207,6 +213,25 @@ fn output_settings() -> Retained<NSDictionary<NSString, AnyObject>> {
             AVVideoColorPropertiesKey.unwrap(),
         ];
         let values: [&AnyObject; 4] = [&format, &io_surface, &metal, &colour];
+        NSDictionary::from_slices(&keys, &values)
+    }
+}
+
+/// 10-bit video-range NV12 (`x420`), with no colour conversion: the frame's
+/// attachments describe its matrix, primaries and transfer function.
+fn native_output_settings() -> Retained<NSDictionary<NSString, AnyObject>> {
+    // SAFETY: CoreVideo's keys are CFStrings, toll-free bridged to NSString.
+    unsafe {
+        let key = |key: &CFString| -> &NSString { &*(key as *const CFString).cast::<NSString>() };
+        let format = NSNumber::new_u32(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange);
+        let io_surface = NSDictionary::<NSString, AnyObject>::new();
+        let metal = NSNumber::new_bool(true);
+        let keys = [
+            key(kCVPixelBufferPixelFormatTypeKey),
+            key(kCVPixelBufferIOSurfacePropertiesKey),
+            key(kCVPixelBufferMetalCompatibilityKey),
+        ];
+        let values: [&AnyObject; 3] = [&format, &io_surface, &metal];
         NSDictionary::from_slices(&keys, &values)
     }
 }

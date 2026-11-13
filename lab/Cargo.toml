@@ -11,6 +11,10 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Play through Karya Labs' GPUI (spec 4.3); see scripts/karya-gpui.
+karya-gpui = ["gpui-av-avfoundation/karya-gpui"]
+
 [dependencies]
 gpui-av.workspace = true
 gpui.workspace = true
