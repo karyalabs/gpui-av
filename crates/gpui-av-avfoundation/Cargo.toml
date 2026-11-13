@@ -16,12 +16,15 @@ workspace = true
 gpui-av.workspace = true
 gpui.workspace = true
 block2 = "0.6"
+dispatch2 = { version = "0.3", default-features = false, features = ["std", "objc2"] }
 objc2 = "0.6"
+objc2-uniform-type-identifiers = { version = "0.3.2", default-features = false, features = ["std", "UTType"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "std",
     "block2",
     "NSArray",
     "NSDictionary",
+    "NSEnumerator",
     "NSError",
     "NSNotification",
     "NSOperation",
@@ -58,7 +61,9 @@ objc2-av-foundation = { version = "0.3.2", default-features = false, features = 
     "objc2-core-foundation",
     "objc2-core-media",
     "objc2-core-video",
+    "dispatch2",
     "AVAsset",
+    "AVAssetResourceLoader",
     "AVAssetTrack",
     "AVError",
     "AVMediaFormat",
@@ -72,6 +77,12 @@ objc2-av-foundation = { version = "0.3.2", default-features = false, features = 
 ] }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
+# The tests write their own clip with Apple's encoder.
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["AVAssetWriter", "AVAssetWriterInput"] }
 # runtime_shaders: compile GPUI's Metal shaders at run time, so building
 # needs no Metal toolchain (Xcode 26+ downloads it separately).
 gpui-platform = { workspace = true, features = ["runtime_shaders"] }
+
+[[test]]
+name = "http"
+harness = false
