@@ -1,0 +1,49 @@
+#!/bin/sh
+# Run a cargo command against a branch of Karya Labs' GPUI (spec 4.3),
+# such as a patch not yet published. The workspace already builds on the
+# published crates; this fetches karyalabs/zed, turns the branch into
+# gpui-pre-named crates with its karya/gpui-pre.py, and patches them in for
+# this command only, leaving Cargo.toml and Cargo.lock as they are.
+#
+#   KARYA_GPUI_REF=my-branch scripts/karya-gpui run -p gpui-av-lab -- clip.mp4
+#
+# KARYA_GPUI_REF picks the karyalabs/zed branch (default gpui-pre/0.3.12).
+set -eu
+
+ref=${KARYA_GPUI_REF:-gpui-pre/0.3.12}
+root=$(cd "$(dirname "$0")/.." && pwd)
+work="$root/target/karya-gpui"
+src="$work/zed"
+out="$work/crates"
+version=$(sed -n 's/^gpui = { package = "gpui-pre", version = "=\([0-9.]*\)".*/\1/p' "$root/Cargo.toml")
+
+if [ ! -d "$src/.git" ]; then
+    mkdir -p "$work"
+    git clone --quiet --filter=blob:none --no-checkout --depth 1 \
+        https://github.com/karyalabs/zed "$src"
+    git -C "$src" sparse-checkout set karya
+fi
+# Deep enough to reach the Zed commit the patches start from.
+git -C "$src" fetch --quiet --filter=blob:none --depth 100 origin "$ref"
+git -C "$src" checkout --quiet --force FETCH_HEAD
+python3 "$src/karya/gpui-pre.py" --version "$version" --out "$out" >&2
+
+# Put one --config per patched crate in front of the caller's arguments,
+# so they reach cargo and not a program after `--`.
+count=$#
+for crate in "$out"/*/; do
+    name=$(basename "$crate")
+    set -- "$@" --config "patch.crates-io.$name.path='${crate%/}'"
+done
+i=0
+while [ "$i" -lt "$count" ]; do
+    arg=$1
+    shift
+    set -- "$@" "$arg"
+    i=$((i + 1))
+done
+cd "$root"
+# Patching rewrites Cargo.lock; put the stock one back afterwards.
+cp Cargo.lock "$work/Cargo.lock.stock"
+trap 'cp "$work/Cargo.lock.stock" Cargo.lock' EXIT INT TERM
+cargo "$@"

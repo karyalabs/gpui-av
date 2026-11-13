@@ -11,6 +11,12 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# The workspace builds on Karya Labs' GPUI (spec 4.3), so the lab draws
+# through it by default; `--no-default-features` plays the stock way.
+default = ["karya-gpui"]
+karya-gpui = ["gpui-av-avfoundation/karya-gpui"]
+
 [dependencies]
 gpui-av.workspace = true
 gpui.workspace = true

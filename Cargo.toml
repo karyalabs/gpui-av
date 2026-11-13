@@ -41,3 +41,10 @@ missing_docs = "warn"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# Karya Labs' GPUI (spec 4.3): the gpui-pre crates our patches change, from
+# karyalabs/zed. Only this workspace's builds use them; a crate published
+# from here still builds on stock gpui-pre for its users.
+[patch.crates-io]
+gpui-pre-apple = { git = "https://github.com/karyalabs/zed", branch = "crates/gpui-pre-0.3.12" }
+gpui-pre-macos = { git = "https://github.com/karyalabs/zed", branch = "crates/gpui-pre-0.3.12" }
