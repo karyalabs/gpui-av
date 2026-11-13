@@ -99,6 +99,32 @@ class Server(unittest.TestCase):
         )
         self.assertEqual((response.status, body), (206, b"\x00"))
 
+    def test_moved_redirects_to_private_on_the_same_host(self):
+        self.assertEqual(self.get("/moved/clip.mp4")[0].status, 401)
+        response, _ = self.get("/moved/clip.mp4", {"Authorization": "Bearer secret"})
+        self.assertEqual(response.status, 302)
+        self.assertEqual(response.getheader("Location"), "/private/clip.mp4")
+        response, _ = self.get("/moved/missing.mp4", {"Authorization": "Bearer secret"})
+        self.assertEqual(response.status, 404)
+
+    def test_hop_redirects_to_open_under_the_other_host_name(self):
+        port = self.server.server_port
+        self.assertEqual(self.get("/hop/clip.mp4")[0].status, 401)
+        token = {"Authorization": "Bearer secret"}
+        response, _ = self.get("/hop/clip.mp4", {**token, "Host": f"127.0.0.1:{port}"})
+        self.assertEqual(response.status, 302)
+        self.assertEqual(response.getheader("Location"), f"http://localhost:{port}/open/clip.mp4")
+        response, _ = self.get("/hop/clip.mp4", {**token, "Host": f"localhost:{port}"})
+        self.assertEqual(response.getheader("Location"), f"http://127.0.0.1:{port}/open/clip.mp4")
+
+    def test_open_refuses_a_request_that_carries_authorization(self):
+        response, body = self.get("/open/clip.mp4", {"Range": "bytes=0-1"})
+        self.assertEqual((response.status, body), (206, b"\x00\x01"))
+        self.assertEqual(response.getheader("Access-Control-Allow-Origin"), "*")
+        self.assertEqual(response.getheader("Cross-Origin-Resource-Policy"), "cross-origin")
+        response, _ = self.get("/open/clip.mp4", {"Authorization": "Bearer secret"})
+        self.assertEqual(response.status, 400)
+
     def test_the_index_lists_media_only(self):
         response, body = self.get("/clips/index.json")
         self.assertEqual(response.status, 200)

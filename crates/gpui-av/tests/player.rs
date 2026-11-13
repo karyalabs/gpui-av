@@ -20,6 +20,8 @@ struct Log {
     sessions_dropped: usize,
     /// How many times the element mounted, and how many of those ended.
     mounted: (usize, usize),
+    /// The session shows its frames outside the window, as an overlay does.
+    presents_itself: bool,
 }
 
 /// What the scripted session hands out from `mount`.
@@ -98,6 +100,9 @@ impl Session for ScriptedSession {
         self.log.borrow_mut().mounted.0 += 1;
         Some(Box::new(MountGuard(self.log.clone())))
     }
+    fn needs_frames(&self) -> bool {
+        !self.log.borrow().presents_itself
+    }
     fn paint(&mut self, _placement: Placement, _window: &mut Window, _cx: &mut App) {}
 }
 
@@ -160,6 +165,37 @@ fn without_a_backend_the_player_fails(cx: &mut TestAppContext) {
         PlaybackState::Failed(error) => assert_eq!(error.kind(), ErrorKind::NoBackend),
         other => panic!("expected a failure, got {other:?}"),
     });
+}
+
+#[gpui::test]
+fn a_failure_at_open_reaches_a_subscriber(cx: &mut TestAppContext) {
+    let refusal = Error::new(ErrorKind::Unsupported, "cannot send request headers");
+    let backend: Rc<dyn Backend> = Rc::new(Scripted {
+        log: Rc::default(),
+        refuse: Some(refusal.clone()),
+    });
+    // Created and subscribed to in one go, as a view does.
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let seen = events.clone();
+    let player = cx.update(|cx| {
+        let player = cx.new(|cx| VideoPlayer::with_backend(source(), backend, cx));
+        cx.subscribe(&player, move |_, event: &PlayerEvent, _| {
+            seen.borrow_mut().push(event.clone());
+        })
+        .detach();
+        player
+    });
+    assert!(events.borrow().is_empty());
+
+    cx.run_until_parked();
+    assert_eq!(
+        *events.borrow(),
+        [PlayerEvent::StateChanged(PlaybackState::Failed(refusal))]
+    );
+    // Once only.
+    cx.run_until_parked();
+    assert_eq!(events.borrow().len(), 1);
+    drop(player);
 }
 
 #[gpui::test]
@@ -372,4 +408,40 @@ fn the_session_is_mounted_while_its_element_shows_the_picture(cx: &mut TestAppCo
     });
     cx.run_until_parked();
     assert_eq!(log.borrow().mounted, (2, 1));
+}
+
+/// Draws the stage with a playing picture and says how many callbacks the
+/// window then holds for its next frame.
+fn frames_asked_for(presents_itself: bool, cx: &mut TestAppContext) -> usize {
+    let (backend, log) = scripted();
+    log.borrow_mut().presents_itself = presents_itself;
+    let player = cx.new(|cx| VideoPlayer::with_backend(source(), backend, cx));
+    let (_stage, cx) = cx.add_window_view({
+        let player = player.clone();
+        |_, _| Stage {
+            player,
+            shown: true,
+        }
+    });
+    sink(&log).info(MediaInfo {
+        natural_size: Some(size(1920, 1080)),
+        has_video: true,
+        ..MediaInfo::default()
+    });
+    sink(&log).state(PlaybackState::Playing);
+    cx.run_until_parked();
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    cx.update(|window, cx| window.simulate_next_frame(cx))
+}
+
+#[gpui::test]
+fn a_playing_picture_drawn_in_the_window_asks_for_the_next_frame(cx: &mut TestAppContext) {
+    // One for each time the window drew.
+    assert!(frames_asked_for(false, cx) > 0);
+}
+
+#[gpui::test]
+fn a_session_that_presents_itself_asks_for_no_frames(cx: &mut TestAppContext) {
+    assert_eq!(frames_asked_for(true, cx), 0);
 }

@@ -5,7 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
-use gpui::{App, Point, Window, point, size};
+use gpui::{App, Pixels, Point, Size, Window, point, size};
 use gpui_av::{Error, ErrorKind, EventSink, MediaInfo, Placement, PlaybackState, Session, Stats};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
@@ -38,9 +38,14 @@ type Listener = Closure<dyn FnMut(web_sys::Event)>;
 /// What runs when the element fires an event.
 type Handler = fn(&Rc<Shared>);
 
+/// The page's events after which the canvas may be somewhere else.
+const PAGE_EVENTS: [&str; 2] = ["scroll", "resize"];
+
 pub(crate) struct WebSession {
     shared: Rc<Shared>,
     listeners: Vec<(&'static str, Listener)>,
+    /// Listens to [`PAGE_EVENTS`] on the page's window.
+    page_listener: Listener,
     /// The service worker registration of a source with headers.
     proxied: Option<(Rc<Proxy>, String)>,
 }
@@ -71,6 +76,29 @@ struct Shared {
     info: RefCell<Option<MediaInfo>>,
     /// The placement last applied; empty while the element is hidden.
     css: RefCell<String>,
+    /// What the element was last painted with, while it shows.
+    painted: RefCell<Option<Painted>>,
+}
+
+/// What `paint` was last given. GPUI only paints when its own window
+/// changes, so this is kept to move the overlay when the page moves the
+/// canvas instead: a scroll, or a layout change around it.
+struct Painted {
+    placement: Placement,
+    canvas: Option<web_sys::HtmlCanvasElement>,
+    /// The window's size in GPUI's logical pixels.
+    viewport: Size<Pixels>,
+}
+
+impl Painted {
+    /// The element's CSS for where the canvas is now; empty when nothing
+    /// of the picture shows.
+    fn css(&self) -> String {
+        let canvas = measure(self.canvas.as_ref(), self.viewport);
+        Layout::new(&self.placement, canvas)
+            .map(|layout| layout.css())
+            .unwrap_or_default()
+    }
 }
 
 impl WebSession {
@@ -115,8 +143,21 @@ impl WebSession {
             progress: Cell::new(None),
             info: RefCell::new(None),
             css: RefCell::new(String::new()),
+            painted: RefCell::new(None),
         });
         let listeners = Shared::listen(&shared)?;
+        let page_listener = Listener::new({
+            let shared = shared.clone();
+            move |_| shared.follow_canvas()
+        });
+        for name in PAGE_EVENTS {
+            // Capturing, so that a scroll inside any element counts.
+            window.add_event_listener_with_callback_and_bool(
+                name,
+                page_listener.as_ref().unchecked_ref(),
+                true,
+            )?;
+        }
 
         match &proxied {
             Some((proxy, ..)) => {
@@ -148,6 +189,7 @@ impl WebSession {
         Ok(Self {
             shared,
             listeners,
+            page_listener,
             proxied: proxied.map(|(proxy, id, _)| (proxy, id)),
         })
     }
@@ -393,6 +435,16 @@ impl Shared {
             .set_css_text(&format!("{BASE_CSS}{placed}"));
         *self.css.borrow_mut() = css;
     }
+
+    /// Puts the element where the canvas is now, after the page moved it
+    /// without GPUI painting.
+    fn follow_canvas(&self) {
+        let css = match &*self.painted.borrow() {
+            Some(painted) => painted.css(),
+            None => return,
+        };
+        self.place(css);
+    }
 }
 
 /// Held by the `video()` element while it shows the picture; hides the
@@ -401,6 +453,7 @@ struct Overlay(Rc<Shared>);
 
 impl Drop for Overlay {
     fn drop(&mut self) {
+        self.0.painted.replace(None);
         self.0.place(String::new());
     }
 }
@@ -480,11 +533,19 @@ impl Session for WebSession {
         Some(Box::new(Overlay(self.shared.clone())))
     }
 
+    // The browser shows the frames itself; GPUI only says where.
+    fn needs_frames(&self) -> bool {
+        false
+    }
+
     fn paint(&mut self, placement: Placement, window: &mut Window, _cx: &mut App) {
-        let css = Layout::new(&placement, canvas_of(window))
-            .map(|layout| layout.css())
-            .unwrap_or_default();
-        self.shared.place(css);
+        let painted = Painted {
+            placement,
+            canvas: canvas(window),
+            viewport: window.viewport_size(),
+        };
+        self.shared.place(painted.css());
+        self.shared.painted.replace(Some(painted));
     }
 }
 
@@ -501,25 +562,33 @@ impl Drop for WebSession {
         let _ = video.remove_attribute("src");
         video.load();
         video.remove();
+        if let Some(window) = web_sys::window() {
+            for name in PAGE_EVENTS {
+                let _ = window.remove_event_listener_with_callback_and_bool(
+                    name,
+                    self.page_listener.as_ref().unchecked_ref(),
+                    true,
+                );
+            }
+        }
         if let Some((proxy, id)) = &self.proxied {
             proxy.remove(id);
         }
     }
 }
 
-/// Where the window's canvas is in the browser's viewport, measured from
-/// the canvas itself.
-fn canvas_of(window: &Window) -> Canvas {
+/// Where a window's canvas is in the browser's viewport, measured from the
+/// canvas itself; `viewport` is the window's size in GPUI's logical pixels.
+fn measure(canvas: Option<&web_sys::HtmlCanvasElement>, viewport: Size<Pixels>) -> Canvas {
     let unscaled = Canvas {
         origin: Point::default(),
         scale: point(1.0, 1.0),
     };
-    let Some(canvas) = canvas(window) else {
+    let Some(canvas) = canvas else {
         return unscaled;
     };
     let rect = canvas.get_bounding_client_rect();
-    let logical = window.viewport_size();
-    let (width, height) = (f32::from(logical.width), f32::from(logical.height));
+    let (width, height) = (f32::from(viewport.width), f32::from(viewport.height));
     if width <= 0.0 || height <= 0.0 {
         return unscaled;
     }

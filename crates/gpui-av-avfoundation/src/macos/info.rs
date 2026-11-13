@@ -167,7 +167,12 @@ fn color(description: &AnyObject) -> ColorInfo {
     let matrix = matrix
         .and_then(|value| value.downcast::<CFString>().ok())
         .and_then(|name| matrix_named(&name));
-    ColorInfo { range, matrix }
+    ColorInfo {
+        range,
+        matrix,
+        // Not read yet.
+        transfer: None,
+    }
 }
 
 fn matrix_named(name: &CFRetained<CFString>) -> Option<ColorMatrix> {

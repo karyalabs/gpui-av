@@ -53,6 +53,7 @@ for one thread. To start one, give the thread this repo and a prompt like:
 | E5 | Linux with a Vulkan GPU; it patches gpui-pre-wgpu locally |
 | E6 | Done |
 | E7 | A Mac and Chrome; MKV clips from the corpus |
+| E8 | A Mac with an HDR (XDR) display; HDR10 and HLG clips |
 | L0 | Any desktop for the app; a Jellyfin server for that source (optional) |
 
 Two traps from E6: test clips come from `scripts/make-clips.sh` (needs
@@ -226,8 +227,16 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   `<video>` on the web. That keeps `CVPixelBuffer` and browser types out of
   the trait, and it is why a backend written outside the crate can draw
   frames at all. While the state is `Playing` or `Buffering` the element
-  asks for a new window frame after every paint; the session decides which
-  decoded frame is due.
+  asks for a new window frame after every paint, and the session decides
+  which decoded frame is due. A session whose platform shows the frames by
+  itself says so (`Session::needs_frames` returns `false`, as the web
+  backend's does): the window then draws only when something else
+  changes, and an app that shows the position redraws on its own timer.
+- **A failure at open is an event too.** When a backend refuses a source
+  outright (or no backend is set), the player starts in `Failed` and a
+  `StateChanged` with that failure follows once the code that created the
+  player has had the chance to subscribe, so an app handles one path
+  whether a failure is found at once or later.
 - **A session knows when its picture shows.** `Session::mount` is called
   when the `video()` element starts showing the picture (it is on screen,
   has an area, and the picture's size is known) and returns a guard that
@@ -275,11 +284,23 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   (`420f`, BT.601 colour properties). Rotated tracks go through an
   `AVVideoComposition`, since `paint_surface` cannot rotate. Request
   headers use `AVURLAssetHTTPHeaderFieldsKey` for now (section 6, R6).
+  HDR media comes out of that conversion as a tone-mapped standard range
+  picture, which is correct but not HDR: measured 2026-11-13 on a 4K
+  59.94 fps 10-bit AV1 HDR10 file (PQ, BT.2020), a frame from this path
+  matches Apple's own standard range rendition within 2 of 255 at six
+  points, at 59.5 fps with no skipped frames and 7% of a core (without a
+  window, so GPUI's drawing is not in that). A browser shows the same
+  file in real HDR. GPUI's Metal layer is 8-bit without extended range
+  and its surface takes only 8-bit NV12, so real HDR output on macOS
+  needs either that changed in GPUI or a presenter of our own that lets
+  macOS draw the video (E8).
 - **The web (E3).** `gpui-av-web` plays a URL with one `HTMLVideoElement`
   per session, appended to the page and kept over the element's bounds
   with `position: fixed`: `paint` turns the `Placement` into a CSS box and
   a `clip-path`, measured against the window's canvas (found through the
-  window's raw handle), and touches the style only when it changes. The
+  window's raw handle), and touches the style only when it changes. GPUI
+  paints only when its own window changes, so the session also re-places
+  the element when the page scrolls or resizes around the canvas. The
   element lets pointer events through to GPUI. The browser decodes, keeps
   audio and video in step and presents frames on its own, so
   `Stats::max_drift` is `None` and the frame counts come from
@@ -294,7 +315,11 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
     them again after the browser restarts it. Without the worker
     (`WebBackend::new()`, or a browser that will not run it) such a source
     fails with `Unsupported`; headers are never dropped. The real server
-    must allow the page's origin (CORS) when it is another origin.
+    must allow the page's origin (CORS) when it is another origin. On a
+    redirect to another origin the browser drops `Authorization` by
+    itself (checked in Chromium 153 with the test server's `/hop/` route:
+    the clip plays and the token never reaches the second host); any
+    other header crosses only if that origin's CORS preflight allows it.
   - *Errors.* A media element reports a 404, a 401 and an unknown format
     all as "source not supported", so on an error the backend requests
     the first byte of the URL itself and maps the HTTP status:
@@ -315,7 +340,10 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   `wasm32-unknown-unknown` (nightly toolchain, as gpuicn and Matty) and
   serves it with `scripts/serve.py`, which also serves a folder of media
   with range requests, and the same media under `/private/` behind a
-  bearer token. The page's query string is the command line
+  bearer token. For redirects it has `/moved/` (to `/private/` on the
+  same host), `/hop/` (to `/open/` under the server's other host name)
+  and `/open/`, which refuses a request that still carries
+  `Authorization`, as a signed storage URL does. The page's query string is the command line
   (`?bench=tier-a.json&base-url=clips/`, `?clip=<url>`, `?muted`); with no
   clip it lists the served folder, so any folder of videos can be played.
   An unattended run leaves its JSON on `window.gpuiAvLab` and offers it as
@@ -326,8 +354,10 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   are the only code that differs per platform.
 - **Media info** carries duration, natural size (as shown, rotation
   applied), whether there is video, and as optional values the rotation
-  tag, whether there is audio, and colour range and matrix: a backend
-  leaves out what its decoder did not report, and never guesses.
+  tag, whether there is audio, and colour range, matrix and transfer
+  function (standard range, PQ or HLG, so an app can label HDR media): a
+  backend leaves out what its decoder did not report, and never guesses.
+  The transfer function describes the media, not the picture on screen.
 
 ### 4.3 Our GPUI (karyalabs/zed)
 
@@ -406,6 +436,7 @@ question; when it is done, the answer is folded into this spec.
 | E5 | Zero-copy on wgpu: implement `PrimitiveBatch::Surfaces` (NV12) in gpui-pre-wgpu | Patch works locally; decide whether to propose it to Zed |
 | E6 | Can we build on gpui-video-player or alhazen instead of writing backends? | **Done 2026-11-12: no; reuse ideas.** See `experiments/e6-existing-crates` |
 | E7 | Containers the platform will not open (MKV on AVFoundation and in browsers): our own Rust demuxer feeding VideoToolbox / WebCodecs (Mediabunny on the web), or an optional GStreamer backend on macOS? | The MKV clips in the corpus play on macOS and in Chrome through the chosen path; cost measured |
+| E8 | macOS: real HDR output. A second presenter that lets macOS draw the video in its own layer over the element (`AVSampleBufferDisplayLayer` or `AVPlayerLayer`, placed as the web overlay is; GPUI cannot draw over it), or an extended range surface path proposed to GPUI? | An HDR10 and an HLG clip show with extended brightness on an XDR display through the chosen path; cost and limits recorded |
 | L0 | Build `gpui-av-lab`, the playground and benchmark app (section 5.1) | Interactive mode and `--bench` play the tier A corpus from local and HTTP sources |
 
 Order: E0 and E6 first (cheap, and they can cancel work), then E1 and E3

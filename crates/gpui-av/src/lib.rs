@@ -37,7 +37,7 @@ pub use backend::{
 };
 pub use element::{Video, video};
 pub use error::{Error, ErrorKind};
-pub use media::{ColorInfo, ColorMatrix, ColorRange, MediaInfo, Rotation};
+pub use media::{ColorInfo, ColorMatrix, ColorRange, MediaInfo, Rotation, TransferFunction};
 pub use player::{PlaybackState, PlayerEvent, VideoPlayer};
 pub use source::{Location, Source};
 
