@@ -64,6 +64,11 @@ pub struct Expected {
     /// How long the bench plays this clip, when not the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub play_seconds: Option<f64>,
+    /// Backends on which a clip that must fail may play instead, because
+    /// whether it plays depends on what the machine has installed (FFV1
+    /// plays through GStreamer when gst-libav is there).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub may_play_on: Vec<String>,
 }
 
 /// Whether a clip must play or must fail.
@@ -103,6 +108,11 @@ pub struct Checks {
 pub const DURATION_TOLERANCE: Duration = Duration::from_millis(150);
 
 impl Expected {
+    /// Whether the clip must end in `Failed` on this backend.
+    pub fn must_fail_on(&self, backend: &str) -> bool {
+        self.expect == Outcome::Fails && !self.may_play_on.iter().any(|name| name == backend)
+    }
+
     /// Compares what a backend reported with this entry.
     pub fn check(&self, info: &MediaInfo) -> Checks {
         let has_video = self.video_codec.is_some();

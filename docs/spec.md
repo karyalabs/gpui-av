@@ -19,7 +19,10 @@ backend (E3) plays the whole tier A corpus in Chrome, with flat memory
 over 10 minutes and an overlay that follows resize, scroll and a move
 between screens of different pixel ratio; Safari and Firefox are not run
 yet. E6 is done (section 5): we write our own backends and borrow ideas
-from `gpui-video-player`. The next milestone is Linux (E2). When gpui-av works, its player
+from `gpui-video-player`. E2 is answered (2026-11-13): the Linux backend
+(`gpui-av-gstreamer`) plays the tier A corpus, but drawing through
+`RenderImage` costs about as much CPU per frame as decoding, which makes
+zero-copy on wgpu (E5) the next step for Linux. When gpui-av works, its player
 moves into gpuicn (Karya Labs' GPUI component library) as a component, and
 Matty uses it from there. Until then this repo stands alone: no other Karya
 Labs repo depends on it, and nothing here needs Matty or gpuicn to build.
@@ -166,8 +169,9 @@ of them is a valid outcome of the experiments.
   types or `unsafe` in that trait. Backends:
   - macOS: `AVPlayer` + `AVPlayerItemVideoOutput`, giving `CVPixelBuffer`s.
   - Linux: GStreamer `playbin` with an `appsink`, loaded at run time so the
-    app still starts without GStreamer; without it, fall back to opening the
-    file in the system player.
+    app still builds and starts without GStreamer; without it every source
+    fails as `Unsupported` (what to do then, such as opening the system
+    player, is the app's choice).
   - Web: an `HTMLVideoElement`. Later, WebCodecs `VideoDecoder` plus a Rust
     MP4 demuxer for frames inside the canvas. Mediabunny (a demuxer and
     WebCodecs wrapper) is a candidate for that later web backend; not
@@ -205,6 +209,7 @@ not here, so gpui-av stays a media crate.
 crates/gpui-av                the API; depends on the GPUI core crate only
 crates/gpui-av-avfoundation   macOS backend (E1), depends on gpui-av
 crates/gpui-av-web            web backend (E3), depends on gpui-av
+crates/gpui-av-gstreamer      Linux backend (E2), depends on gpui-av
 lab/                          gpui-av-lab (L0), with its test-pattern backend
 ```
 
@@ -307,6 +312,40 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   only output on macOS. The media info reports the transfer function
   (`Sdr`, `Pq`, `Hlg`), read from the track's format description, so an
   app can tell which files are affected.
+- **Linux (E2).** `gpui-av-gstreamer` loads GLib and GStreamer 1.x with
+  `dlopen` when the first source opens (a hand-written table of the few
+  functions it calls), so it links nothing at build time; the crate
+  builds on every desktop target and is tried on Linux only.
+  `GStreamerBackend::is_available` tells an app whether GStreamer is
+  there. The session is a `playbin` whose video sink is
+  `videoflip video-direction=auto ! videoconvert n-threads=0 ! appsink`
+  with BGRA caps: the rotation tag is applied before the frame reaches
+  us, and the conversion uses every core to keep its latency short. The
+  appsink's callback copies each frame into a `RenderImage` on
+  GStreamer's thread and keeps only the newest; `paint` draws it with
+  `paint_image` and frees the previous one. The appsink syncs to the
+  pipeline clock (the audio clock), so a frame arrives when it is due;
+  frames replaced before a paint, and those the sink drops for being late
+  (QoS), count as dropped. State comes from the bus, read every 20 ms on
+  the main thread, as macOS polls AVPlayer. Request headers go into
+  `souphttpsrc`'s `extra-headers` from playbin's `source-setup`; a source
+  element without that property fails the media as `Unsupported`.
+  libsoup sends them to the source's host and drops `Authorization` on a
+  redirect to another host (checked with `scripts/serve.py`'s `/hop/`);
+  other headers cross like a browser's would without CORS limits.
+  Errors map from GStreamer's error domains, with the HTTP status read
+  from souphttpsrc's debug text. GStreamer's demuxers end a file that is
+  cut off without an error (the pipeline only says so when the clock
+  reaches the stated length), so a picture that ends more than a second
+  before the stated length fails as `Decode`. Colour comes from the
+  decoder's caps (`colorimetry`), and is left out when the stream does
+  not state it. Formats are whatever plugins the machine has: with the
+  usual distribution packages that includes VP9, AV1, MKV and WebM, and
+  FFV1 through gst-libav.
+- **The lab on Linux.** The lab opens GPUI windows on X11 and Wayland and
+  defaults to the GStreamer backend. In the cloud sandbox it runs under
+  Xvfb with Mesa's llvmpipe, which draws about 21 window frames a second:
+  enough for correctness, not for frame counts or CPU.
 - **The web (E3).** `gpui-av-web` plays a URL with one `HTMLVideoElement`
   per session, appended to the page and kept over the element's bounds
   with `position: fixed`: `paint` turns the `Placement` into a CSS box and
@@ -449,7 +488,7 @@ question; when it is done, the answer is folded into this spec.
 |---|---|---|
 | E0 | What do real Mattermost videos look like (containers, codecs, sizes, lengths)? | A table from a sample of real attachments |
 | E1 | macOS: does AVPlayer + `surface()` play 1080p60 smoothly inside a GPUI window? | A demo plays with sound; CPU and dropped frames measured. **Done 2026-11-13: yes**, 0 of 3600 frames dropped at ~19% of one core. See `experiments/e1-avfoundation` |
-| E2 | Linux: GStreamer + RenderImage at 1080p: what does the per-frame copy cost? | CPU, memory and dropped frames at 720p and 1080p |
+| E2 | Linux: GStreamer + RenderImage at 1080p: what does the per-frame copy cost? | CPU, memory and dropped frames at 720p and 1080p. **Done 2026-11-13 (sandbox, no GPU): tier A passes from files and over HTTP; the copies cost about 1.9 ms of CPU per 720p frame and 5 to 6 ms per 1080p frame, as much as software decoding.** Dropped frames and real CPU need a desktop with a GPU: a listed gap. See `experiments/e2-gstreamer` |
 | E3 | Web: a DOM `<video>` overlay that tracks a GPUI element through scroll, resize and close | Works in Chrome, Firefox and Safari. **Done for Chrome 2026-11-13:** tier A passes, memory flat over 10 minutes, overlay follows resize, scroll and a window moved between a 2x and a 1x screen. Safari and Firefox are not run: a listed gap. See `experiments/e3-web-overlay` |
 | E4 | Web: WebCodecs frames drawn inside the canvas without an overlay | One clip plays in Chrome; cost measured against E3 |
 | E5 | Zero-copy on wgpu: implement `PrimitiveBatch::Surfaces` (NV12) in gpui-pre-wgpu | Patch works locally; decide whether to propose it to Zed |
@@ -720,6 +759,13 @@ clip in Chrome, not yet explained.
 
 ## 7. Decisions
 
+- 2026-11-13 (E2): the Linux backend is GStreamer `playbin` drawn as
+  `RenderImage`s, with GStreamer loaded at run time. It plays tier A, but
+  its three copies per frame (convert to BGRA, copy into the image, GPUI's
+  upload) cost as much CPU as decoding, so zero-copy on wgpu (E5, section
+  4.3 patch 4) is the next step for Linux. The tier A manifest gains
+  `may_play_on`: a clip that must fail elsewhere may play on the listed
+  backends (FFV1 on GStreamer with gst-libav).
 - 2026-11-13: the proof of concept (section 5.2) is done. Arya accepted
   playback by eye and ear with their own videos and checked the web
   overlay across two screens by hand. Next: Linux (E2).

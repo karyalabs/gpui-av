@@ -189,7 +189,10 @@
       "errors": [
         "Unsupported"
       ],
-      "note": "FFV1: a codec no platform decoder has."
+      "may_play_on": [
+        "gstreamer"
+      ],
+      "note": "FFV1: a codec no platform decoder has. GStreamer plays it when gst-libav is installed."
     },
     {
       "file": "missing.mp4",
