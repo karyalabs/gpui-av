@@ -11,7 +11,7 @@ use std::time::Duration;
 use gpui::{
     App, AppContext, ClickEvent, Context, Div, Entity, FontWeight, InteractiveElement, IntoElement,
     ParentElement, Render, SharedString, Stateful, StatefulInteractiveElement, Styled,
-    Subscription, Window, div, px, rgb,
+    Subscription, Task, Window, div, px, rgb,
 };
 use gpui_av::{Backend, ColorMatrix, ColorRange, PlaybackState, PlayerEvent, VideoPlayer, video};
 use web_time::Instant;
@@ -70,7 +70,18 @@ struct Playing {
     player: Entity<VideoPlayer>,
     meter: Meter,
     _subscriptions: [Subscription; 2],
+    /// Redraws the stats while the media moves: a presenter that shows its
+    /// frames outside the window asks for no window frames, so nothing
+    /// else would.
+    _ticker: Task<()>,
 }
+
+/// How often the stats are redrawn while the media plays, and how often
+/// until the first frame has been seen and timed.
+const STATS_TICK: Duration = Duration::from_millis(250);
+const FIRST_FRAME_TICK: Duration = Duration::from_millis(8);
+/// How long the first frame is watched for that closely.
+const FIRST_FRAME_WAIT: Duration = Duration::from_secs(5);
 
 impl LabView {
     /// Creates the view. With `autoplay` it starts the first clip on the
@@ -181,10 +192,37 @@ impl LabView {
                 }
             }),
         ];
+        let ticker = cx.spawn(async move |this, cx| {
+            let mut tick = FIRST_FRAME_TICK;
+            loop {
+                cx.background_executor().timer(tick).await;
+                let next = this.update(cx, |this, cx| {
+                    let playing = this.playing.as_ref()?;
+                    let state = playing.player.read(cx).state();
+                    let moving = matches!(state, PlaybackState::Playing | PlaybackState::Buffering);
+                    let waiting = playing.meter.first_frame.is_none()
+                        && !matches!(state, PlaybackState::Failed(_))
+                        && playing.meter.opened.elapsed() < FIRST_FRAME_WAIT;
+                    if moving || waiting {
+                        cx.notify();
+                    }
+                    Some(if waiting {
+                        FIRST_FRAME_TICK
+                    } else {
+                        STATS_TICK
+                    })
+                });
+                match next {
+                    Ok(Some(next)) => tick = next,
+                    _ => break,
+                }
+            }
+        });
         self.playing = Some(Playing {
             player,
             meter: Meter::new(),
             _subscriptions: subscriptions,
+            _ticker: ticker,
         });
         cx.notify();
     }

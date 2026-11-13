@@ -8,6 +8,14 @@
   /clips/index.json the names of the media files in FOLDER
   /private/<file>   the same files, for requests that carry
                     "Authorization: Bearer <token>"; 401 without
+  /moved/<file>     with the token: a redirect to /private/<file> on the
+                    same host, where the token must arrive again
+  /hop/<file>       with the token: a redirect to /open/<file> on another
+                    host name (localhost for 127.0.0.1, and the reverse)
+  /open/<file>      the same files without a token, as a signed storage
+                    URL serves them: 400 if an Authorization header comes
+                    along, so a player that carries the token across the
+                    redirect fails
   /                 the lab's web build, with --app (scripts/web passes it)
   /reports/<name>   with --reports: a POST saves its body as DIR/<name>,
                     which is how the lab in a page hands over a bench report
@@ -76,7 +84,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def end_headers(self):
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
-        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        if urllib.parse.urlsplit(self.path).path.startswith("/open/"):
+            # Reached from another origin after /hop/, so a page may read it.
+            self.send_header("Cross-Origin-Resource-Policy", "cross-origin")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Headers", "Range")
+            self.send_header(
+                "Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges"
+            )
+        else:
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
@@ -99,6 +116,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.do_GET()
 
+    def do_OPTIONS(self):
+        # A page's preflight for /open/: only Range may come along.
+        self.answer(204)
+
+    def other_host(self):
+        """This server under its other name, which a player sees as a
+        different host: localhost for 127.0.0.1, and the reverse."""
+        host = self.headers.get("Host") or ""
+        name = host.rsplit(":", 1)[0]
+        other = "127.0.0.1" if name == "localhost" else "localhost"
+        return f"http://{other}:{self.server.server_port}"
+
+    def redirect(self, location):
+        self.answer(302, extra=[("Location", location)])
+
     def do_POST(self):
         path = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
         name = path[len("/reports/"):] if path.startswith("/reports/") else ""
@@ -120,10 +152,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.log:
             ranged = self.headers.get("Range")
             print(f"{self.command} {path} range={ranged} token={authorized}", flush=True)
-        if path.startswith("/private/"):
+        for route in ("/private/", "/moved/", "/hop/"):
+            if not path.startswith(route):
+                continue
             if not authorized:
                 return self.answer(401, b"unauthorized\n", extra=[("WWW-Authenticate", "Bearer")])
-            return self.send_file(self.resolve(self.folder, path[len("/private/"):]))
+            name = path[len(route):]
+            if route == "/private/":
+                return self.send_file(self.resolve(self.folder, name))
+            if self.resolve(self.folder, name) is None:
+                return self.answer(404, b"not found\n")
+            quoted = urllib.parse.quote(name)
+            if route == "/moved/":
+                return self.redirect(f"/private/{quoted}")
+            return self.redirect(f"{self.other_host()}/open/{quoted}")
+        if path.startswith("/open/"):
+            if self.headers.get("Authorization") is not None:
+                return self.answer(400, b"this URL takes no Authorization header\n")
+            return self.send_file(self.resolve(self.folder, path[len("/open/"):]))
         if path == "/clips/index.json":
             names = sorted(
                 name

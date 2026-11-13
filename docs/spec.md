@@ -226,8 +226,16 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   `<video>` on the web. That keeps `CVPixelBuffer` and browser types out of
   the trait, and it is why a backend written outside the crate can draw
   frames at all. While the state is `Playing` or `Buffering` the element
-  asks for a new window frame after every paint; the session decides which
-  decoded frame is due.
+  asks for a new window frame after every paint, and the session decides
+  which decoded frame is due. A session whose platform shows the frames by
+  itself says so (`Session::needs_frames` returns `false`, as the web
+  backend's does): the window then draws only when something else
+  changes, and an app that shows the position redraws on its own timer.
+- **A failure at open is an event too.** When a backend refuses a source
+  outright (or no backend is set), the player starts in `Failed` and a
+  `StateChanged` with that failure follows once the code that created the
+  player has had the chance to subscribe, so an app handles one path
+  whether a failure is found at once or later.
 - **A session knows when its picture shows.** `Session::mount` is called
   when the `video()` element starts showing the picture (it is on screen,
   has an area, and the picture's size is known) and returns a guard that
@@ -279,7 +287,9 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   per session, appended to the page and kept over the element's bounds
   with `position: fixed`: `paint` turns the `Placement` into a CSS box and
   a `clip-path`, measured against the window's canvas (found through the
-  window's raw handle), and touches the style only when it changes. The
+  window's raw handle), and touches the style only when it changes. GPUI
+  paints only when its own window changes, so the session also re-places
+  the element when the page scrolls or resizes around the canvas. The
   element lets pointer events through to GPUI. The browser decodes, keeps
   audio and video in step and presents frames on its own, so
   `Stats::max_drift` is `None` and the frame counts come from
@@ -294,7 +304,11 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
     them again after the browser restarts it. Without the worker
     (`WebBackend::new()`, or a browser that will not run it) such a source
     fails with `Unsupported`; headers are never dropped. The real server
-    must allow the page's origin (CORS) when it is another origin.
+    must allow the page's origin (CORS) when it is another origin. On a
+    redirect to another origin the browser drops `Authorization` by
+    itself (checked in Chromium 153 with the test server's `/hop/` route:
+    the clip plays and the token never reaches the second host); any
+    other header crosses only if that origin's CORS preflight allows it.
   - *Errors.* A media element reports a 404, a 401 and an unknown format
     all as "source not supported", so on an error the backend requests
     the first byte of the URL itself and maps the HTTP status:
@@ -315,7 +329,10 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   `wasm32-unknown-unknown` (nightly toolchain, as gpuicn and Matty) and
   serves it with `scripts/serve.py`, which also serves a folder of media
   with range requests, and the same media under `/private/` behind a
-  bearer token. The page's query string is the command line
+  bearer token. For redirects it has `/moved/` (to `/private/` on the
+  same host), `/hop/` (to `/open/` under the server's other host name)
+  and `/open/`, which refuses a request that still carries
+  `Authorization`, as a signed storage URL does. The page's query string is the command line
   (`?bench=tier-a.json&base-url=clips/`, `?clip=<url>`, `?muted`); with no
   clip it lists the served folder, so any folder of videos can be played.
   An unattended run leaves its JSON on `window.gpuiAvLab` and offers it as

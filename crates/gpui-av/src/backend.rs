@@ -98,6 +98,20 @@ pub trait Session: 'static {
         None
     }
 
+    /// Whether the picture only moves on when [`paint`](Self::paint) runs.
+    /// While this holds and the media plays, the
+    /// [`video()`](crate::video) element asks the window for a new frame
+    /// after each one, so `paint` runs at the display's rate. That is right
+    /// for a session that draws into the window, and the default.
+    ///
+    /// A session whose platform shows the frames by itself (a browser's
+    /// media element, a native layer) returns `false`: the window then
+    /// draws only when something else changes, and `paint` still runs on
+    /// each of those frames to say where the picture goes.
+    fn needs_frames(&self) -> bool {
+        true
+    }
+
     /// Draws the frame that is due now. Called during the paint phase of
     /// every window frame in which the [`video()`](crate::video) element
     /// shows the picture. The session presents the frame however its platform does

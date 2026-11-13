@@ -62,7 +62,8 @@ pub struct VideoPlayer {
 impl VideoPlayer {
     /// Opens `source` with the default backend (see
     /// [`set_default_backend`](crate::set_default_backend)). With no default
-    /// set, the player starts in [`PlaybackState::Failed`].
+    /// set, the player fails at once, as described on
+    /// [`with_backend`](Self::with_backend).
     pub fn new(source: Source, cx: &mut Context<Self>) -> Self {
         match default_backend(cx) {
             Some(backend) => Self::with_backend(source, backend, cx),
@@ -73,17 +74,24 @@ impl VideoPlayer {
                     ErrorKind::NoBackend,
                     "no gpui-av backend is set; call gpui_av::set_default_backend at startup",
                 ),
+                cx,
             ),
         }
     }
 
     /// Opens `source` with a backend of the app's choice.
+    ///
+    /// When the backend refuses the source outright, the player starts in
+    /// [`PlaybackState::Failed`], and a [`PlayerEvent::StateChanged`] with
+    /// that failure follows once the code that created the player has had
+    /// the chance to subscribe. So a failure is reported the same way
+    /// whether it is found at once or later.
     pub fn with_backend(source: Source, backend: Rc<dyn Backend>, cx: &mut Context<Self>) -> Self {
         let (name, presenter) = (backend.name(), backend.presenter());
         let (sink, events) = EventSink::channel();
         let session = match backend.open(source, sink, cx) {
             Ok(session) => session,
-            Err(error) => return Self::failed(name, presenter, error),
+            Err(error) => return Self::failed(name, presenter, error, cx),
         };
         let pump = cx.spawn(async move |this, cx| {
             while let Ok(event) = events.recv().await {
@@ -107,7 +115,21 @@ impl VideoPlayer {
         }
     }
 
-    fn failed(backend_name: &'static str, presenter: &'static str, error: Error) -> Self {
+    fn failed(
+        backend_name: &'static str,
+        presenter: &'static str,
+        error: Error,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        // Nobody can have subscribed yet, so the event waits for the code
+        // that is creating the player to finish.
+        let announce = cx.spawn(async move |this, cx| {
+            this.update(cx, |this, cx| {
+                cx.emit(PlayerEvent::StateChanged(this.state.clone()));
+                cx.notify();
+            })
+            .ok();
+        });
         Self {
             backend_name,
             presenter,
@@ -118,7 +140,7 @@ impl VideoPlayer {
             volume: 1.0,
             muted: false,
             looping: false,
-            _events: None,
+            _events: Some(announce),
         }
     }
 
@@ -273,13 +295,17 @@ impl VideoPlayer {
         self.presenter
     }
 
-    /// Whether the picture can change without a new event: the element keeps
-    /// asking for frames while this holds.
+    /// Whether the picture can change without a new event and only shows
+    /// when the window draws: the element keeps asking for frames while
+    /// this holds.
     pub(crate) fn wants_frames(&self) -> bool {
         matches!(
             self.state,
             PlaybackState::Playing | PlaybackState::Buffering
-        )
+        ) && self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.needs_frames())
     }
 
     pub(crate) fn mount(&mut self) -> Option<Box<dyn Any>> {
