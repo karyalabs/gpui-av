@@ -213,13 +213,57 @@ such a run shows for what it is.
    So a server that redirects to another host (a CDN) gets the app's
    credentials. The documented alternative, an
    `AVAssetResourceLoaderDelegate` with a custom scheme doing the HTTP
-   ourselves, fixes both and lets the backend decide per redirect. It is
-   the first follow-up for this backend.
+   ourselves, fixes both and lets the backend decide per redirect. **Done
+   2026-11-13 (R6), see "Request headers through our own loader" below.**
 6. **Build.** Xcode 26+ ships without the Metal compiler, and gpui-pre-apple
    compiles its shaders in `build.rs`. The example uses gpui-pre-platform's
    `runtime_shaders` feature, so nothing in this repo needs the Metal
    toolchain. Apps that build GPUI's shaders ahead of time need
    `xcodebuild -downloadComponent MetalToolchain`.
+
+### Request headers through our own loader (R6, 2026-11-13)
+
+A URL with headers now gets a made-up scheme (`gpuiav-http`), so
+AVFoundation asks the backend's `AVAssetResourceLoaderDelegate` for every
+byte range; the backend fetches each with `NSURLSession`, carrying the
+headers and `Range`, and streams the bytes back. NSURLSession drops
+`Authorization` on every redirect, so the loader puts the headers back on
+redirects to the source's origin and leaves them off anywhere else. A URL
+without headers keeps AVPlayer's own loading; `AVURLAssetHTTPHeaderFieldsKey`
+is no longer used.
+
+Checked by a test with no window (`cargo test -p gpui-av-avfoundation
+--test http`, in CI on macOS): a headless GPUI app plays a clip it writes
+with Apple's encoder, through the public `VideoPlayer`, from a local
+server. With the header the clip plays and seeks and every request carries
+the header and a range; without it, `Unauthorized`; a missing file,
+`NotFound`; a same-origin redirect keeps the header; a redirect to another
+host drops it and keeps the range (the target answers 400 to any
+`Authorization`, as signed storage URLs do); a connection cut mid-range
+does not hang; an HLS playlist with headers is `Unsupported`.
+
+With `GPUI_AV_CLIPS=clips` the same test plays the tier A corpus over
+`/private/`, `/moved/` and `/hop/`, and without the token. All 15 clips
+behave as on a local file (11 play and seek; truncated and random bytes
+`Decode`; FFV1 `Unsupported`; missing `NotFound`), without the token every
+one is `Unauthorized`, and of 390 requests none reached the other host
+with the header. Timings, time to `Playing` and to `Seeked`, before the old
+option was removed, same run:
+
+| Path | To `Playing` (ms) | Seek (ms) |
+|---|---|---|
+| Old header option, `/private/` | 25–85, median 45 | 31–138, median 81 |
+| Our loader, `/private/` | 27–69, median 66 | 34–90, median 82 |
+| Our loader, `/moved/` (same origin) | 25–69, median 66 | 31–132, median 76 |
+| Our loader, `/hop/` (another host) | 25–71, median 66 | 35–136, median 80 |
+
+So the loader costs about 20 ms before playback starts, likely the
+separate content information request AVFoundation makes first, and
+nothing on seeks. Two things it took: AVFoundation passes a delegate's
+error on only as a 16-bit OSStatus, so the loader's HTTP statuses travel
+as codes -31000 minus the status; and Apple's advice to turn off
+`automaticallyWaitsToMinimizeStalling` when a delegate loads the media is
+followed.
 
 ### The trait
 

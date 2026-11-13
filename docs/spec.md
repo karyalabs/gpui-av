@@ -282,8 +282,15 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   with a fixed BT.601 matrix, so the AVFoundation backend asks
   `AVPlayerItemVideoOutput` to convert each frame to exactly that
   (`420f`, BT.601 colour properties). Rotated tracks go through an
-  `AVVideoComposition`, since `paint_surface` cannot rotate. Request
-  headers use `AVURLAssetHTTPHeaderFieldsKey` for now (section 6, R6).
+  `AVVideoComposition`, since `paint_surface` cannot rotate. A URL with
+  request headers loads through the backend's own
+  `AVAssetResourceLoaderDelegate` (a made-up scheme, `NSURLSession` range
+  requests carrying the headers): headers go to the source's origin only,
+  so a redirect to another host gets none, and the headerless URL keeps
+  AVPlayer's own loading. HLS with headers fails as `Unsupported` for now
+  (section 6, R6). AVFoundation keeps only the low 16 bits of a delegate's
+  error code, so the loader's HTTP statuses travel as codes -31000 minus
+  the status.
   HDR media comes out of that conversion as a tone-mapped standard range
   picture, which is correct but not HDR: measured 2026-11-13 on a 4K
   59.94 fps 10-bit AV1 HDR10 file (PQ, BT.2020), a frame from this path
@@ -680,11 +687,14 @@ tier A, and the next milestone is Linux (E2).
 - **R4. Codecs and law.** Use only the decoders the OS or browser already
   has; never bundle GStreamer plugins or ffmpeg. Not legal advice.
 - **R5. Scope.** One maintainer plus Claude. Keep to the non-goals.
-- **R6. Request headers on macOS.** `AVURLAssetHTTPHeaderFieldsKey` is
-  exported but not in a public header (App Store review has rejected it),
-  and AVFoundation sends the headers on to the target of a cross-host
-  redirect. An `AVAssetResourceLoaderDelegate` doing the HTTP ourselves
-  removes both; it is the next step for the macOS backend (E1).
+- **R6. Request headers on macOS.** Resolved 2026-11-13. The backend used
+  `AVURLAssetHTTPHeaderFieldsKey`, exported but in no public header (App
+  Store review has rejected it), with which AVFoundation sent the headers
+  on to the target of a cross-host redirect. Sources with headers now load
+  through our own `AVAssetResourceLoaderDelegate`; headers go only to the
+  source's origin. Cost, tier A over local HTTP: median time to `Playing`
+  66 ms against 45 ms with the old option, seeks unchanged (median 82 ms
+  against 81). Open: HLS with headers (fails as `Unsupported`).
 
 ## 7. Decisions
 
