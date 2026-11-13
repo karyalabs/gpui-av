@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use gpui_av::{ColorMatrix, ColorRange, MediaInfo};
+use gpui_av::{ColorMatrix, ColorRange, MediaInfo, TransferFunction};
 use serde::{Deserialize, Serialize};
 
 /// A corpus: a list of clips with their expected properties.
@@ -58,6 +58,9 @@ pub struct Expected {
     /// `"bt601"`, `"bt709"` or `"bt2020"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color_matrix: Option<String>,
+    /// `"sdr"`, `"pq"` or `"hlg"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_transfer: Option<String>,
     /// How long the bench plays this clip, when not the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub play_seconds: Option<f64>,
@@ -92,6 +95,8 @@ pub struct Checks {
     pub color_range: Option<bool>,
     /// The colour matrix.
     pub color_matrix: Option<bool>,
+    /// The transfer function: standard range, or which kind of HDR.
+    pub color_transfer: Option<bool>,
 }
 
 /// How far a reported length may be from the manifest's.
@@ -140,6 +145,19 @@ impl Expected {
                             _ => "other",
                         }
                 });
+        let transfer =
+            self.color_transfer
+                .as_deref()
+                .zip(info.color.transfer)
+                .map(|(expected, reported)| {
+                    expected
+                        == match reported {
+                            TransferFunction::Sdr => "sdr",
+                            TransferFunction::Pq => "pq",
+                            TransferFunction::Hlg => "hlg",
+                            _ => "other",
+                        }
+                });
         Checks {
             size,
             rotation: self
@@ -153,6 +171,7 @@ impl Expected {
             },
             color_range: range,
             color_matrix: matrix,
+            color_transfer: transfer,
         }
     }
 }
@@ -205,7 +224,7 @@ mod tests {
             color: ColorInfo {
                 range: Some(ColorRange::Limited),
                 matrix: Some(ColorMatrix::Bt709),
-                transfer: None,
+                transfer: Some(TransferFunction::Sdr),
             },
         };
         let checks = entry("h264-1280x720-rotate90.mp4").check(&info);
@@ -218,6 +237,7 @@ mod tests {
                 tracks: Some(true),
                 color_range: Some(true),
                 color_matrix: Some(true),
+                color_transfer: Some(true),
             }
         );
     }
@@ -244,6 +264,7 @@ mod tests {
                 tracks: Some(false),
                 color_range: None,
                 color_matrix: None,
+                color_transfer: None,
             }
         );
     }
