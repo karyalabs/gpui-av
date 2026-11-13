@@ -1,0 +1,22 @@
+[package]
+name = "gpui-av-gstreamer"
+description = "The GStreamer backend for gpui-av (Linux first): playbin, drawn as GPUI images."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# GStreamer is loaded when the first source opens, not linked: an app
+# built with this backend starts and builds on a machine without
+# GStreamer, and only this backend fails there (spec 4).
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+gpui-av.workspace = true
+gpui.workspace = true
+image.workspace = true
+smallvec.workspace = true
+libloading.workspace = true

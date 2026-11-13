@@ -52,6 +52,15 @@ web-sys = { workspace = true, features = [
     "console",
 ] }
 
+# GStreamer is the Linux default; it loads at run time, so the lab builds
+# and starts without it.
+[target.'cfg(not(any(target_os = "macos", target_family = "wasm")))'.dependencies]
+gpui-av-gstreamer.workspace = true
+
+# GPUI's Linux windows: X11 and Wayland.
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui-platform = { workspace = true, features = ["x11", "wayland"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui-av-avfoundation.workspace = true
 # Compile GPUI's Metal shaders at run time, so building needs no Metal

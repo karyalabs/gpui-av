@@ -1,0 +1,884 @@
+//! A `playbin` whose video ends in an `appsink` that hands out BGRA
+//! frames as GPUI images, and the safe calls the session makes on it.
+
+use std::ffi::{CString, c_char, c_int, c_uint, c_void};
+use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use gpui::RenderImage;
+use gpui_av::{ColorInfo, ColorMatrix, ColorRange, Error, ErrorKind, Rotation, TransferFunction};
+use image::{Frame as ImageFrame, RgbaImage};
+use smallvec::SmallVec;
+
+use crate::ffi::{self, Api, GstMessage};
+
+/// What the video branch does to each decoded frame: turn it upright
+/// (rotation tags), convert it to the BGRA GPUI's images hold, and hand it
+/// to us. `n-threads=0` lets the conversion use every core, which keeps
+/// the time from decode to screen short.
+const VIDEO_SINK: &str = "videoflip video-direction=auto ! videoconvert n-threads=0 \
+     ! appsink name=sink caps=video/x-raw,format=BGRA sync=true qos=true \
+     max-lateness=20000000 enable-last-sample=false max-buffers=1 drop=true";
+
+/// A decoded frame, ready to paint.
+pub(crate) struct Frame {
+    /// The presentation time, when the stream gave one.
+    pub pts: Option<Duration>,
+    pub image: Arc<RenderImage>,
+}
+
+/// What the streaming thread leaves for the main thread.
+#[derive(Default)]
+pub(crate) struct Frames {
+    /// The newest frame not yet painted.
+    pub latest: Option<Frame>,
+    /// Frames replaced before a paint took them.
+    pub replaced: u64,
+}
+
+/// Shared between the appsink's callbacks and the session.
+#[derive(Default)]
+pub(crate) struct Shared {
+    pub frames: Mutex<Frames>,
+    /// Time spent copying frames out of GStreamer, and how many, for the
+    /// copy cost in E2.
+    pub copy_nanos: AtomicU64,
+    pub copies: AtomicU64,
+    /// The presentation time of the newest frame, in nanoseconds plus one
+    /// (0: none yet).
+    last_pts: AtomicU64,
+    /// The video branch reached its end.
+    pub video_ended: AtomicBool,
+}
+
+impl Shared {
+    /// The presentation time of the newest frame the sink took.
+    pub fn last_pts(&self) -> Option<Duration> {
+        match self.last_pts.load(Ordering::Acquire) {
+            0 => None,
+            nanos => Some(Duration::from_nanos(nanos - 1)),
+        }
+    }
+}
+
+/// One GStreamer object reference, released on drop.
+struct Object(*mut c_void);
+
+impl Drop for Object {
+    fn drop(&mut self) {
+        if let Ok(api) = ffi::api() {
+            // SAFETY: we own one reference.
+            unsafe { (api.gst.gst_object_unref)(self.0) };
+        }
+    }
+}
+
+/// A message popped from the bus, released on drop.
+pub(crate) struct Message<'a> {
+    api: &'a Api,
+    raw: *mut GstMessage,
+}
+
+impl Drop for Message<'_> {
+    fn drop(&mut self) {
+        // SAFETY: we own the message.
+        unsafe { (self.api.gst.gst_mini_object_unref)(self.raw.cast()) };
+    }
+}
+
+/// What a bus message means to the session.
+pub(crate) enum Event {
+    Eos,
+    Error(Error),
+    /// The orientation tag of the video.
+    Rotation(Rotation),
+    Buffering(i32),
+    /// The pipeline itself reached this state.
+    State(c_int),
+    AsyncDone,
+    DurationChanged,
+    ClockLost,
+    /// A plugin the media needs is not installed.
+    MissingPlugin(String),
+    /// The video sink's count of frames dropped for being late.
+    SinkDropped(u64),
+    Other,
+}
+
+pub(crate) struct Pipeline {
+    api: &'static Api,
+    playbin: *mut c_void,
+    bus: *mut c_void,
+    sink: Object,
+    pub shared: Arc<Shared>,
+    header_setup: Option<Arc<HeaderSetup>>,
+}
+
+/// The request headers, and whether the source playbin picked could not
+/// take them.
+struct HeaderSetup {
+    headers: Vec<(CString, CString)>,
+    refused: AtomicBool,
+}
+
+impl Pipeline {
+    /// Builds the pipeline for `uri` without starting it. `headers` go
+    /// with every HTTP request.
+    pub fn new(api: &'static Api, uri: &str, headers: &[(String, String)]) -> Result<Self, Error> {
+        let uri = c_string(uri)?;
+        let headers = headers
+            .iter()
+            .map(|(name, value)| Ok((c_string(name)?, c_string(value)?)))
+            .collect::<Result<Vec<_>, Error>>()?;
+        let gst = &api.gst;
+        let gobject = &api.gobject;
+        // SAFETY: plain GStreamer construction calls with valid strings; every
+        // pointer is checked before use, and each reference has one owner.
+        unsafe {
+            let playbin = (gst.gst_element_factory_make)(c"playbin".as_ptr(), ptr::null());
+            if playbin.is_null() {
+                return Err(Error::new(
+                    ErrorKind::Unsupported,
+                    "GStreamer has no playbin: install its base plugins",
+                ));
+            }
+            let playbin = (gst.gst_object_ref_sink)(playbin);
+            let playbin_ref = Object(playbin);
+
+            let description = c_string(VIDEO_SINK)?;
+            let mut error = ptr::null_mut();
+            let bin = (gst.gst_parse_bin_from_description)(description.as_ptr(), 1, &mut error);
+            if bin.is_null() {
+                let message = ffi::take_error(&api.glib, error)
+                    .map(|(_, _, message)| message)
+                    .unwrap_or_default();
+                return Err(Error::new(
+                    ErrorKind::Unsupported,
+                    format!("GStreamer cannot build the video branch: {message}"),
+                ));
+            }
+            let sink = Object((gst.gst_bin_get_by_name)(bin, c"sink".as_ptr()));
+            // Takes the bin's floating reference.
+            (gobject.g_object_set)(playbin, c"video-sink".as_ptr(), bin, ptr::null::<c_void>());
+            let mut flags: c_uint = 0;
+            (gobject.g_object_get)(
+                playbin,
+                c"flags".as_ptr(),
+                &mut flags,
+                ptr::null::<c_void>(),
+            );
+            (gobject.g_object_set)(
+                playbin,
+                c"flags".as_ptr(),
+                flags | ffi::GST_PLAY_FLAG_NATIVE_VIDEO,
+                ptr::null::<c_void>(),
+            );
+            (gobject.g_object_set)(
+                playbin,
+                c"uri".as_ptr(),
+                uri.as_ptr(),
+                ptr::null::<c_void>(),
+            );
+
+            let header_setup = (!headers.is_empty()).then(|| {
+                Arc::new(HeaderSetup {
+                    headers,
+                    refused: AtomicBool::new(false),
+                })
+            });
+            if let Some(setup) = &header_setup {
+                let headers = Arc::into_raw(setup.clone());
+                (gobject.g_signal_connect_data)(
+                    playbin,
+                    c"source-setup".as_ptr(),
+                    on_source_setup as *mut c_void,
+                    headers as *mut c_void,
+                    Some(release_headers),
+                    0,
+                );
+            }
+
+            let shared = Arc::new(Shared::default());
+            let callbacks = ffi::GstAppSinkCallbacks {
+                eos: Some(on_eos),
+                new_preroll: Some(on_preroll),
+                new_sample: Some(on_sample),
+                reserved: [ptr::null_mut(); 4],
+            };
+            (api.app.gst_app_sink_set_callbacks)(
+                sink.0,
+                &callbacks,
+                Arc::into_raw(shared.clone()) as *mut c_void,
+                Some(release_shared),
+            );
+
+            let bus = (gst.gst_element_get_bus)(playbin);
+            std::mem::forget(playbin_ref);
+            Ok(Self {
+                api,
+                playbin,
+                bus,
+                sink,
+                shared,
+                header_setup,
+            })
+        }
+    }
+
+    /// Whether the source playbin chose for the URL cannot send request
+    /// headers, so the media must not play.
+    pub fn headers_refused(&self) -> bool {
+        self.header_setup
+            .as_ref()
+            .is_some_and(|setup| setup.refused.load(Ordering::Acquire))
+    }
+
+    /// Asks for a state; returns false when GStreamer refused at once.
+    pub fn set_state(&self, state: c_int) -> bool {
+        // SAFETY: a valid element.
+        let result = unsafe { (self.api.gst.gst_element_set_state)(self.playbin, state) };
+        result != ffi::GST_STATE_CHANGE_FAILURE
+    }
+
+    pub fn seek(&self, position: Duration) -> bool {
+        let nanos = i64::try_from(position.as_nanos()).unwrap_or(i64::MAX);
+        // SAFETY: a valid element.
+        unsafe {
+            (self.api.gst.gst_element_seek_simple)(
+                self.playbin,
+                ffi::GST_FORMAT_TIME,
+                ffi::GST_SEEK_FLAG_FLUSH | ffi::GST_SEEK_FLAG_ACCURATE,
+                nanos,
+            ) != 0
+        }
+    }
+
+    pub fn position(&self) -> Option<Duration> {
+        let mut nanos = 0i64;
+        // SAFETY: a valid element and out parameter.
+        let known = unsafe {
+            (self.api.gst.gst_element_query_position)(
+                self.playbin,
+                ffi::GST_FORMAT_TIME,
+                &mut nanos,
+            )
+        };
+        (known != 0 && nanos >= 0).then(|| Duration::from_nanos(nanos as u64))
+    }
+
+    pub fn duration(&self) -> Option<Duration> {
+        let mut nanos = 0i64;
+        // SAFETY: a valid element and out parameter.
+        let known = unsafe {
+            (self.api.gst.gst_element_query_duration)(
+                self.playbin,
+                ffi::GST_FORMAT_TIME,
+                &mut nanos,
+            )
+        };
+        (known != 0 && nanos >= 0).then(|| Duration::from_nanos(nanos as u64))
+    }
+
+    pub fn set_volume(&self, volume: f32) {
+        let volume = f64::from(volume.clamp(0.0, 1.0));
+        // SAFETY: playbin's `volume` is a gdouble.
+        unsafe {
+            (self.api.gobject.g_object_set)(
+                self.playbin,
+                c"volume".as_ptr(),
+                volume,
+                ptr::null::<c_void>(),
+            )
+        };
+    }
+
+    pub fn set_muted(&self, muted: bool) {
+        // SAFETY: playbin's `mute` is a gboolean.
+        unsafe {
+            (self.api.gobject.g_object_set)(
+                self.playbin,
+                c"mute".as_ptr(),
+                c_int::from(muted),
+                ptr::null::<c_void>(),
+            )
+        };
+    }
+
+    fn int_property(&self, name: &std::ffi::CStr) -> i32 {
+        let mut value: c_int = 0;
+        // SAFETY: `name` is an int property of playbin.
+        unsafe {
+            (self.api.gobject.g_object_get)(
+                self.playbin,
+                name.as_ptr(),
+                &mut value,
+                ptr::null::<c_void>(),
+            )
+        };
+        value
+    }
+
+    pub fn video_streams(&self) -> i32 {
+        self.int_property(c"n-video")
+    }
+
+    pub fn audio_streams(&self) -> i32 {
+        self.int_property(c"n-audio")
+    }
+
+    /// The size of the frames the sink gets (upright), with the pixel
+    /// aspect ratio applied.
+    pub fn display_size(&self) -> Option<(u32, u32)> {
+        // SAFETY: a valid element; the pad and caps references are ours.
+        unsafe {
+            let caps = self.pad_caps(self.sink.0, c"sink")?;
+            self.caps_size(caps.raw)
+        }
+    }
+
+    /// The decoder's colour description, from the caps playbin's first
+    /// video stream arrives with.
+    pub fn color(&self) -> ColorInfo {
+        // SAFETY: `get-video-pad` returns a pad reference we own (or null).
+        unsafe {
+            let mut pad: *mut c_void = ptr::null_mut();
+            (self.api.gobject.g_signal_emit_by_name)(
+                self.playbin,
+                c"get-video-pad".as_ptr(),
+                0 as c_int,
+                &mut pad,
+            );
+            if pad.is_null() {
+                return ColorInfo::default();
+            }
+            let pad = Object(pad);
+            let caps = (self.api.gst.gst_pad_get_current_caps)(pad.0);
+            if caps.is_null() {
+                return ColorInfo::default();
+            }
+            let caps = Caps {
+                api: self.api,
+                raw: caps,
+            };
+            let structure = (self.api.gst.gst_caps_get_structure)(caps.raw, 0);
+            let colorimetry = ffi::string((self.api.gst.gst_structure_get_string)(
+                structure,
+                c"colorimetry".as_ptr(),
+            ));
+            colorimetry
+                .as_deref()
+                .map(parse_colorimetry)
+                .unwrap_or_default()
+        }
+    }
+
+    /// The rotation tag of the first video stream, from the tags playbin
+    /// collected for it.
+    pub fn video_rotation(&self) -> Option<Rotation> {
+        let mut list: *mut c_void = ptr::null_mut();
+        // SAFETY: `get-video-tags` returns a tag list we own, or null.
+        unsafe {
+            (self.api.gobject.g_signal_emit_by_name)(
+                self.playbin,
+                c"get-video-tags".as_ptr(),
+                0 as c_int,
+                &mut list,
+            );
+            self.take_orientation(list)
+        }
+    }
+
+    /// Reads the orientation tag from a tag list and releases the list.
+    ///
+    /// # Safety
+    /// `list` must be null or a tag list the caller owns.
+    unsafe fn take_orientation(&self, list: *mut c_void) -> Option<Rotation> {
+        if list.is_null() {
+            return None;
+        }
+        let api = self.api;
+        // SAFETY: per the contract; the string is ours to free.
+        unsafe {
+            let mut value: *mut c_char = ptr::null_mut();
+            let found =
+                (api.gst.gst_tag_list_get_string)(list, c"image-orientation".as_ptr(), &mut value)
+                    != 0;
+            let orientation = ffi::string(value);
+            (api.glib.g_free)(value.cast());
+            (api.gst.gst_mini_object_unref)(list);
+            orientation
+                .filter(|_| found)
+                .as_deref()
+                .map(parse_orientation)
+        }
+    }
+
+    /// # Safety
+    /// `element` must be a valid element.
+    unsafe fn pad_caps(&self, element: *mut c_void, name: &std::ffi::CStr) -> Option<Caps> {
+        // SAFETY: per the contract; references are released by their owners.
+        unsafe {
+            let pad = (self.api.gst.gst_element_get_static_pad)(element, name.as_ptr());
+            if pad.is_null() {
+                return None;
+            }
+            let pad = Object(pad);
+            let caps = (self.api.gst.gst_pad_get_current_caps)(pad.0);
+            (!caps.is_null()).then(|| Caps {
+                api: self.api,
+                raw: caps,
+            })
+        }
+    }
+
+    /// # Safety
+    /// `caps` must be valid caps.
+    unsafe fn caps_size(&self, caps: *mut c_void) -> Option<(u32, u32)> {
+        let gst = &self.api.gst;
+        // SAFETY: per the contract.
+        unsafe {
+            let structure = (gst.gst_caps_get_structure)(caps, 0);
+            let (mut width, mut height) = (0, 0);
+            if (gst.gst_structure_get_int)(structure, c"width".as_ptr(), &mut width) == 0
+                || (gst.gst_structure_get_int)(structure, c"height".as_ptr(), &mut height) == 0
+            {
+                return None;
+            }
+            let (mut numerator, mut denominator) = (1, 1);
+            (gst.gst_structure_get_fraction)(
+                structure,
+                c"pixel-aspect-ratio".as_ptr(),
+                &mut numerator,
+                &mut denominator,
+            );
+            Some(display_size(width, height, numerator, denominator))
+        }
+    }
+
+    /// The next message on the bus, if any.
+    pub fn pop(&self) -> Option<Message<'static>> {
+        // SAFETY: a valid bus; the message reference is ours.
+        let raw = unsafe { (self.api.gst.gst_bus_pop)(self.bus) };
+        (!raw.is_null()).then(|| Message { api: self.api, raw })
+    }
+
+    /// What a message means, for messages about this pipeline.
+    pub fn read(&self, message: &Message) -> Event {
+        let api = self.api;
+        let gst = &api.gst;
+        let raw = message.raw;
+        // SAFETY: a valid message; every out value is released as GStreamer
+        // documents.
+        unsafe {
+            let kind = (*raw).type_;
+            let source = (*raw).src;
+            match kind {
+                ffi::GST_MESSAGE_EOS => Event::Eos,
+                ffi::GST_MESSAGE_ERROR => {
+                    let (mut error, mut debug) = (ptr::null_mut(), ptr::null_mut());
+                    (gst.gst_message_parse_error)(raw, &mut error, &mut debug);
+                    let debug_text = ffi::string(debug);
+                    (api.glib.g_free)(debug.cast());
+                    let (domain, code, text) = ffi::take_error(&api.glib, error)
+                        .unwrap_or_else(|| (String::new(), 0, "GStreamer failed".into()));
+                    Event::Error(crate::errors::map(
+                        &domain,
+                        code,
+                        &text,
+                        debug_text.as_deref(),
+                    ))
+                }
+                ffi::GST_MESSAGE_TAG => {
+                    let mut list = ptr::null_mut();
+                    (gst.gst_message_parse_tag)(raw, &mut list);
+                    match self.take_orientation(list) {
+                        Some(rotation) => Event::Rotation(rotation),
+                        None => Event::Other,
+                    }
+                }
+                ffi::GST_MESSAGE_BUFFERING => {
+                    let mut percent = 0;
+                    (gst.gst_message_parse_buffering)(raw, &mut percent);
+                    Event::Buffering(percent)
+                }
+                ffi::GST_MESSAGE_STATE_CHANGED if source == self.playbin => {
+                    let (mut old, mut new, mut pending) = (0, 0, 0);
+                    (gst.gst_message_parse_state_changed)(raw, &mut old, &mut new, &mut pending);
+                    Event::State(new)
+                }
+                ffi::GST_MESSAGE_ASYNC_DONE if source == self.playbin => Event::AsyncDone,
+                ffi::GST_MESSAGE_DURATION_CHANGED => Event::DurationChanged,
+                ffi::GST_MESSAGE_CLOCK_LOST => Event::ClockLost,
+                ffi::GST_MESSAGE_QOS if source == self.sink.0 => {
+                    let (mut format, mut processed, mut dropped) = (0, 0u64, 0u64);
+                    (gst.gst_message_parse_qos_stats)(
+                        raw,
+                        &mut format,
+                        &mut processed,
+                        &mut dropped,
+                    );
+                    if dropped == u64::MAX {
+                        Event::Other
+                    } else {
+                        Event::SinkDropped(dropped)
+                    }
+                }
+                ffi::GST_MESSAGE_ELEMENT => {
+                    let structure = (gst.gst_message_get_structure)(raw);
+                    if structure.is_null()
+                        || ffi::string((gst.gst_structure_get_name)(structure)).as_deref()
+                            != Some("missing-plugin")
+                    {
+                        return Event::Other;
+                    }
+                    let name =
+                        ffi::string((gst.gst_structure_get_string)(structure, c"name".as_ptr()))
+                            .unwrap_or_else(|| "a GStreamer plugin".into());
+                    Event::MissingPlugin(name)
+                }
+                _ => Event::Other,
+            }
+        }
+    }
+}
+
+impl Drop for Pipeline {
+    fn drop(&mut self) {
+        // SAFETY: stopping the pipeline joins its streaming threads, after
+        // which nothing calls back into us; then the references are dropped.
+        unsafe {
+            (self.api.gst.gst_element_set_state)(self.playbin, ffi::GST_STATE_NULL);
+            (self.api.gst.gst_object_unref)(self.bus);
+            (self.api.gst.gst_object_unref)(self.playbin);
+        }
+    }
+}
+
+/// Caps, released on drop.
+struct Caps {
+    api: &'static Api,
+    raw: *mut c_void,
+}
+
+impl Drop for Caps {
+    fn drop(&mut self) {
+        // SAFETY: we own one reference.
+        unsafe { (self.api.gst.gst_mini_object_unref)(self.raw) };
+    }
+}
+
+fn c_string(value: &str) -> Result<CString, Error> {
+    CString::new(value).map_err(|_| Error::new(ErrorKind::Unsupported, "a NUL byte in the source"))
+}
+
+/// The size a picture of `width` by `height` stored pixels shows at, given
+/// its pixel aspect ratio.
+pub(crate) fn display_size(
+    width: i32,
+    height: i32,
+    numerator: i32,
+    denominator: i32,
+) -> (u32, u32) {
+    let width = width.max(0) as u64;
+    let height = height.max(0) as u64;
+    if numerator <= 0 || denominator <= 0 || numerator == denominator {
+        return (width as u32, height as u32);
+    }
+    let shown = (width * numerator as u64 + denominator as u64 / 2) / denominator as u64;
+    (shown as u32, height as u32)
+}
+
+/// Reads GStreamer's `image-orientation` tag. A mirrored picture is
+/// reported by its rotation alone.
+pub(crate) fn parse_orientation(tag: &str) -> Rotation {
+    match tag.trim_start_matches("flip-") {
+        "rotate-90" => Rotation::Cw90,
+        "rotate-180" => Rotation::Cw180,
+        "rotate-270" => Rotation::Cw270,
+        _ => Rotation::None,
+    }
+}
+
+/// Reads GStreamer's `colorimetry` caps field: one of its names, or
+/// `range:matrix:transfer:primaries` as numbers.
+pub(crate) fn parse_colorimetry(text: &str) -> ColorInfo {
+    use ColorMatrix::*;
+    use TransferFunction::*;
+    let limited = Some(ColorRange::Limited);
+    match text {
+        "bt601" => ColorInfo {
+            range: limited,
+            matrix: Some(Bt601),
+            transfer: Some(Sdr),
+        },
+        "bt709" => ColorInfo {
+            range: limited,
+            matrix: Some(Bt709),
+            transfer: Some(Sdr),
+        },
+        "bt2020" | "bt2020-10" => ColorInfo {
+            range: limited,
+            matrix: Some(Bt2020),
+            transfer: Some(Sdr),
+        },
+        "bt2100-pq" => ColorInfo {
+            range: limited,
+            matrix: Some(Bt2020),
+            transfer: Some(Pq),
+        },
+        "bt2100-hlg" => ColorInfo {
+            range: limited,
+            matrix: Some(Bt2020),
+            transfer: Some(Hlg),
+        },
+        "smpte240m" => ColorInfo {
+            range: limited,
+            matrix: None,
+            transfer: Some(Sdr),
+        },
+        "sRGB" => ColorInfo {
+            range: Some(ColorRange::Full),
+            matrix: None,
+            transfer: Some(Sdr),
+        },
+        _ => {
+            let numbers: Vec<Option<u32>> = text.split(':').map(|part| part.parse().ok()).collect();
+            let [range, matrix, transfer, ..] = numbers[..] else {
+                return ColorInfo::default();
+            };
+            ColorInfo {
+                // GstVideoColorRange
+                range: match range {
+                    Some(1) => Some(ColorRange::Full),
+                    Some(2) => Some(ColorRange::Limited),
+                    _ => None,
+                },
+                // GstVideoColorMatrix
+                matrix: match matrix {
+                    Some(3) => Some(Bt709),
+                    Some(4) => Some(Bt601),
+                    Some(6) => Some(Bt2020),
+                    _ => None,
+                },
+                // GstVideoTransferFunction: 14 is SMPTE 2084, 15 ARIB STD-B67.
+                transfer: match transfer {
+                    None | Some(0) => None,
+                    Some(14) => Some(Pq),
+                    Some(15) => Some(Hlg),
+                    Some(_) => Some(Sdr),
+                },
+            }
+        }
+    }
+}
+
+unsafe extern "C" fn on_source_setup(
+    _playbin: *mut c_void,
+    source: *mut c_void,
+    data: *mut c_void,
+) {
+    let Ok(api) = ffi::api() else { return };
+    // SAFETY: `data` is the header list this handler was connected with,
+    // alive until `release_headers`; `source` is a valid element.
+    unsafe {
+        let setup = &*(data as *const HeaderSetup);
+        // G_OBJECT_GET_CLASS: the class pointer is an instance's first field.
+        let class = *(source as *const *mut c_void);
+        if (api.gobject.g_object_class_find_property)(class, c"extra-headers".as_ptr()).is_null() {
+            // The session fails the media rather than play it without them.
+            setup.refused.store(true, Ordering::Release);
+            return;
+        }
+        let structure = (api.gst.gst_structure_new_empty)(c"extra-headers".as_ptr());
+        for (name, value) in &setup.headers {
+            (api.gst.gst_structure_set)(
+                structure,
+                name.as_ptr(),
+                G_TYPE_STRING,
+                value.as_ptr(),
+                ptr::null::<c_void>(),
+            );
+        }
+        (api.gobject.g_object_set)(
+            source,
+            c"extra-headers".as_ptr(),
+            structure,
+            ptr::null::<c_void>(),
+        );
+        (api.gst.gst_structure_free)(structure);
+    }
+}
+
+/// `G_TYPE_STRING`: fundamental type 16, shifted by two.
+const G_TYPE_STRING: usize = 16 << 2;
+
+unsafe extern "C" fn release_headers(data: *mut c_void) {
+    // SAFETY: the pointer came from `Arc::into_raw` in `Pipeline::new`.
+    drop(unsafe { Arc::from_raw(data as *const HeaderSetup) });
+}
+
+unsafe extern "C" fn release_shared(data: *mut c_void) {
+    // SAFETY: the pointer came from `Arc::into_raw` in `Pipeline::new`.
+    drop(unsafe { Arc::from_raw(data as *const Shared) });
+}
+
+unsafe extern "C" fn on_eos(_sink: *mut c_void, data: *mut c_void) {
+    // SAFETY: called by appsink with the user data we gave it.
+    let shared = unsafe { &*(data as *const Shared) };
+    shared.video_ended.store(true, Ordering::Release);
+}
+
+unsafe extern "C" fn on_preroll(sink: *mut c_void, data: *mut c_void) -> ffi::GstFlowReturn {
+    // SAFETY: called by appsink with the user data we gave it.
+    unsafe { take_sample(sink, data, true) }
+}
+
+unsafe extern "C" fn on_sample(sink: *mut c_void, data: *mut c_void) -> ffi::GstFlowReturn {
+    // SAFETY: called by appsink with the user data we gave it.
+    unsafe { take_sample(sink, data, false) }
+}
+
+/// Copies the sink's next frame into a GPUI image: the one copy a frame
+/// costs on its way to GPUI's texture upload.
+///
+/// # Safety
+/// `sink` is our appsink and `data` our `Shared`.
+unsafe fn take_sample(sink: *mut c_void, data: *mut c_void, preroll: bool) -> ffi::GstFlowReturn {
+    let Ok(api) = ffi::api() else {
+        return ffi::GST_FLOW_OK;
+    };
+    // SAFETY: per the contract; the sample reference is released below.
+    unsafe {
+        let shared = &*(data as *const Shared);
+        let sample = if preroll {
+            (api.app.gst_app_sink_pull_preroll)(sink)
+        } else {
+            (api.app.gst_app_sink_pull_sample)(sink)
+        };
+        if sample.is_null() {
+            return ffi::GST_FLOW_OK;
+        }
+        let started = std::time::Instant::now();
+        let frame = copy_frame(api, sample);
+        (api.gst.gst_mini_object_unref)(sample);
+        let Some(frame) = frame else {
+            return ffi::GST_FLOW_OK;
+        };
+        shared
+            .copy_nanos
+            .fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        shared.copies.fetch_add(1, Ordering::Relaxed);
+        if let Some(pts) = frame.pts {
+            shared
+                .last_pts
+                .store(pts.as_nanos() as u64 + 1, Ordering::Release);
+        }
+        let mut frames = shared
+            .frames
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(old) = frames.latest.replace(frame) {
+            // The preroll frame comes again as the first sample; that is
+            // not a frame lost.
+            if old.pts != frames.latest.as_ref().and_then(|frame| frame.pts) {
+                frames.replaced += 1;
+            }
+        }
+        ffi::GST_FLOW_OK
+    }
+}
+
+/// # Safety
+/// `sample` must be a valid sample.
+unsafe fn copy_frame(api: &Api, sample: *mut c_void) -> Option<Frame> {
+    let gst = &api.gst;
+    // SAFETY: per the contract; the buffer is unmapped before returning.
+    unsafe {
+        let caps = (gst.gst_sample_get_caps)(sample);
+        let buffer = (gst.gst_sample_get_buffer)(sample);
+        if caps.is_null() || buffer.is_null() {
+            return None;
+        }
+        let structure = (gst.gst_caps_get_structure)(caps, 0);
+        let (mut width, mut height) = (0, 0);
+        (gst.gst_structure_get_int)(structure, c"width".as_ptr(), &mut width);
+        (gst.gst_structure_get_int)(structure, c"height".as_ptr(), &mut height);
+        let (width, height) = (u32::try_from(width).ok()?, u32::try_from(height).ok()?);
+        let row = width as usize * 4;
+        let pts = (*buffer).pts;
+        let mut map = ffi::GstMapInfo::default();
+        if (gst.gst_buffer_map)(buffer, &mut map, ffi::GST_MAP_READ) == 0 {
+            return None;
+        }
+        let bytes = std::slice::from_raw_parts(map.data, map.size);
+        // The appsink takes no video meta, so rows are packed unless
+        // GStreamer padded each to the same stride.
+        let stride = if height > 0 {
+            bytes.len() / height as usize
+        } else {
+            0
+        };
+        let pixels = if stride == row {
+            bytes.get(..row * height as usize).map(<[u8]>::to_vec)
+        } else if stride > row {
+            let mut pixels = Vec::with_capacity(row * height as usize);
+            for line in bytes.chunks_exact(stride).take(height as usize) {
+                pixels.extend_from_slice(&line[..row]);
+            }
+            Some(pixels)
+        } else {
+            None
+        };
+        (gst.gst_buffer_unmap)(buffer, &mut map);
+        let image = RgbaImage::from_raw(width, height, pixels?)?;
+        Some(Frame {
+            pts: (pts != ffi::GST_CLOCK_TIME_NONE).then(|| Duration::from_nanos(pts)),
+            image: Arc::new(RenderImage::new(SmallVec::from_elem(
+                ImageFrame::new(image),
+                1,
+            ))),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn colorimetry_names_and_numbers() {
+        let bt709 = parse_colorimetry("bt709");
+        assert_eq!(bt709.range, Some(ColorRange::Limited));
+        assert_eq!(bt709.matrix, Some(ColorMatrix::Bt709));
+        assert_eq!(bt709.transfer, Some(TransferFunction::Sdr));
+        assert_eq!(
+            parse_colorimetry("bt2100-pq").transfer,
+            Some(TransferFunction::Pq)
+        );
+        let full601 = parse_colorimetry("1:4:16:2");
+        assert_eq!(full601.range, Some(ColorRange::Full));
+        assert_eq!(full601.matrix, Some(ColorMatrix::Bt601));
+        assert_eq!(
+            parse_colorimetry("2:6:15:9").transfer,
+            Some(TransferFunction::Hlg)
+        );
+        assert_eq!(parse_colorimetry("0:0:0:0"), ColorInfo::default());
+        assert_eq!(parse_colorimetry("nonsense"), ColorInfo::default());
+    }
+
+    #[test]
+    fn orientation_tags() {
+        assert_eq!(parse_orientation("rotate-90"), Rotation::Cw90);
+        assert_eq!(parse_orientation("flip-rotate-270"), Rotation::Cw270);
+        assert_eq!(parse_orientation("rotate-0"), Rotation::None);
+    }
+
+    #[test]
+    fn pixel_aspect_ratio_widens_the_picture() {
+        assert_eq!(display_size(720, 576, 16, 15), (768, 576));
+        assert_eq!(display_size(1920, 1080, 1, 1), (1920, 1080));
+        assert_eq!(display_size(1920, 1080, 0, 1), (1920, 1080));
+    }
+}

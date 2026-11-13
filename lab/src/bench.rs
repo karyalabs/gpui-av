@@ -288,10 +288,13 @@ async fn run_one(
     cx: &mut AsyncApp,
 ) -> Option<ClipResult> {
     let expected = job.expected.as_ref();
-    let must_fail = expected.is_some_and(|expected| expected.expect == Outcome::Fails);
     let cpu_before = metrics::cpu_time();
     let opened = Instant::now();
     view.update(cx, |view, cx| view.select(job.clip, backend, cx));
+    let backend_name = view.read_with(cx, |view, cx| {
+        view.player().map(|player| player.read(cx).backend_name())
+    })?;
+    let must_fail = expected.is_some_and(|expected| expected.must_fail_on(backend_name));
 
     // 1. The first frame, or a failure.
     let (mut last, started) =
@@ -360,11 +363,8 @@ async fn run_one(
     let wall = opened.elapsed();
     let cpu = cpu_percent(cpu_before, metrics::cpu_time(), wall);
     let memory = metrics::resident_memory();
-    let (backend_name, presenter) = view.read_with(cx, |view, cx| {
-        view.player().map(|player| {
-            let player = player.read(cx);
-            (player.backend_name(), player.presenter())
-        })
+    let presenter = view.read_with(cx, |view, cx| {
+        view.player().map(|player| player.read(cx).presenter())
     })?;
     view.update(cx, |view, cx| view.close(cx));
 
@@ -380,10 +380,17 @@ async fn run_one(
         (None, true) => "timed_out",
         (None, false) => "played",
     };
+    // A clip that must fail elsewhere describes no picture to check.
     let checks = expected
-        .filter(|_| outcome == "played")
+        .filter(|expected| outcome == "played" && expected.expect == Outcome::Plays)
         .map(|expected| expected.check(&last.info));
-    let problems = problems(expected, outcome, error.as_ref(), checks.as_ref());
+    let problems = problems(
+        expected,
+        backend_name,
+        outcome,
+        error.as_ref(),
+        checks.as_ref(),
+    );
     let due = frames_presented + frames_dropped;
     Some(ClipResult {
         clip: job.name.clone(),
@@ -427,18 +434,19 @@ fn seek_target(duration: Duration, position: Duration) -> Duration {
 /// Everything that makes a result not pass, in words.
 fn problems(
     expected: Option<&Expected>,
+    backend: &str,
     outcome: &str,
     error: Option<&ErrorReport>,
     checks: Option<&Checks>,
 ) -> Vec<String> {
     let mut problems = Vec::new();
-    let must_fail = expected.is_some_and(|expected| expected.expect == Outcome::Fails);
+    let must_fail = expected.is_some_and(|expected| expected.must_fail_on(backend));
+    // A clip that must fail elsewhere may fail here too, with the same
+    // errors.
+    let may_fail = expected.is_some_and(|expected| expected.expect == Outcome::Fails);
     match (must_fail, outcome, error) {
         (false, "played", _) => {}
-        (false, _, Some(error)) => {
-            problems.push(format!("failed with {}: {}", error.kind, error.message));
-        }
-        (true, "failed", Some(error)) => {
+        (_, "failed", Some(error)) if may_fail => {
             let allowed = &expected.expect("must_fail implies an entry").errors;
             if !allowed.contains(&error.kind) {
                 problems.push(format!(
@@ -447,6 +455,9 @@ fn problems(
                     allowed.join(" or ")
                 ));
             }
+        }
+        (false, _, Some(error)) => {
+            problems.push(format!("failed with {}: {}", error.kind, error.message));
         }
         (true, "played", _) => problems.push("played, but it must fail".to_string()),
         _ => problems.push("timed out".to_string()),
@@ -744,34 +755,98 @@ mod tests {
     #[test]
     fn a_clip_that_plays_and_matches_has_no_problems() {
         let expected = Expected::default();
-        assert!(problems(Some(&expected), "played", None, Some(&Checks::default())).is_empty());
-        assert!(problems(None, "played", None, None).is_empty());
+        assert!(
+            problems(
+                Some(&expected),
+                "test",
+                "played",
+                None,
+                Some(&Checks::default())
+            )
+            .is_empty()
+        );
+        assert!(problems(None, "test", "played", None, None).is_empty());
+    }
+
+    #[test]
+    fn a_clip_that_may_play_on_a_backend_passes_either_way() {
+        let mut expected = fails_with(&["Unsupported"]);
+        expected.may_play_on = vec!["gstreamer".into()];
+        assert!(problems(Some(&expected), "gstreamer", "played", None, None).is_empty());
+        assert!(
+            problems(
+                Some(&expected),
+                "gstreamer",
+                "failed",
+                Some(&error("Unsupported")),
+                None
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            problems(
+                Some(&expected),
+                "gstreamer",
+                "failed",
+                Some(&error("Decode")),
+                None
+            ),
+            ["failed with Decode, expected Unsupported"]
+        );
+        assert_eq!(
+            problems(Some(&expected), "avfoundation", "played", None, None),
+            ["played, but it must fail"]
+        );
     }
 
     #[test]
     fn an_unexpected_failure_or_timeout_is_a_problem() {
         let expected = Expected::default();
         assert_eq!(
-            problems(Some(&expected), "failed", Some(&error("Decode")), None),
+            problems(
+                Some(&expected),
+                "test",
+                "failed",
+                Some(&error("Decode")),
+                None
+            ),
             ["failed with Decode: why"]
         );
-        assert_eq!(problems(None, "timed_out", None, None), ["timed out"]);
+        assert_eq!(
+            problems(None, "test", "timed_out", None, None),
+            ["timed out"]
+        );
     }
 
     #[test]
     fn a_clip_that_must_fail_passes_only_with_a_listed_kind() {
         let expected = fails_with(&["Decode", "Unsupported"]);
-        assert!(problems(Some(&expected), "failed", Some(&error("Unsupported")), None).is_empty());
+        assert!(
+            problems(
+                Some(&expected),
+                "test",
+                "failed",
+                Some(&error("Unsupported")),
+                None
+            )
+            .is_empty()
+        );
         assert_eq!(
-            problems(Some(&expected), "failed", Some(&error("Network")), None),
+            problems(
+                Some(&expected),
+                "test",
+                "failed",
+                Some(&error("Network")),
+                None
+            ),
             ["failed with Network, expected Decode or Unsupported"]
         );
         assert_eq!(
-            problems(Some(&expected), "played", None, None),
+            problems(Some(&expected), "test", "played", None, None),
             ["played, but it must fail"]
         );
         assert_eq!(
-            problems(Some(&expected), "timed_out", None, None),
+            problems(Some(&expected), "test", "timed_out", None, None),
             ["timed out"]
         );
     }
@@ -785,7 +860,13 @@ mod tests {
             ..Checks::default()
         };
         assert_eq!(
-            problems(Some(&Expected::default()), "played", None, Some(&checks)),
+            problems(
+                Some(&Expected::default()),
+                "test",
+                "played",
+                None,
+                Some(&checks)
+            ),
             [
                 "size does not match the manifest",
                 "colour matrix does not match the manifest"
