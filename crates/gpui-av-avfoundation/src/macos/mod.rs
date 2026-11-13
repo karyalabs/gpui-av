@@ -2,6 +2,7 @@
 
 mod errors;
 mod info;
+mod loader;
 mod probe;
 mod session;
 
@@ -10,17 +11,19 @@ use std::path::Path;
 use gpui::App;
 use gpui_av::{Backend, Error, ErrorKind, EventSink, Location, Session, Source};
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{AnyThread, MainThreadMarker};
 use objc2_av_foundation::AVURLAsset;
-use objc2_foundation::{NSDictionary, NSMutableDictionary, NSString, NSURL};
+use objc2_foundation::{NSString, NSURL};
 
 /// Plays media with AVFoundation's `AVPlayer` and draws it with GPUI's
 /// surface. macOS only.
 ///
-/// Sources: file paths, and `http`/`https` URLs with request headers. Every
-/// header is sent with every request AVFoundation makes for the media,
-/// range requests included.
+/// Sources: file paths, and `http`/`https` URLs with request headers. A URL
+/// with headers is loaded by the backend's own requests, not AVFoundation's:
+/// every header goes with every request for the media, range requests
+/// included, and with redirects that stay on the URL's origin (scheme, host
+/// and port); a redirect to another origin gets none of them. HLS playlists
+/// with headers are not supported yet and fail as `Unsupported`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AvFoundationBackend;
 
@@ -52,19 +55,20 @@ impl Backend for AvFoundationBackend {
                 "the AVFoundation backend must be opened on the main thread",
             )
         })?;
-        let asset = asset_for(&source)?;
+        let (asset, loader) = asset_for(&source)?;
         let http = source.as_url().map(|url| probe::HttpSource {
             url: url.to_string(),
             headers: source.headers().to_vec(),
         });
         Ok(Box::new(session::AvSession::new(
-            asset, http, events, mtm, cx,
+            asset, loader, http, events, mtm, cx,
         )))
     }
 }
 
-/// The `AVURLAsset` for a source, with its request headers attached.
-fn asset_for(source: &Source) -> Result<Retained<AVURLAsset>, Error> {
+/// The `AVURLAsset` for a source. A URL with request headers loads through
+/// our own loader, which the session must keep alive with the asset.
+fn asset_for(source: &Source) -> Result<(Retained<AVURLAsset>, Option<loader::Loader>), Error> {
     let url = match source.location() {
         Location::File(path) => file_url(path)?,
         Location::Url(url) => web_url(url)?,
@@ -75,7 +79,6 @@ fn asset_for(source: &Source) -> Result<Retained<AVURLAsset>, Error> {
             ));
         }
     };
-    let options = NSMutableDictionary::<NSString, AnyObject>::new();
     if !source.headers().is_empty() {
         if source.path().is_some() {
             return Err(Error::new(
@@ -83,33 +86,14 @@ fn asset_for(source: &Source) -> Result<Retained<AVURLAsset>, Error> {
                 "request headers were given for a file, which makes no requests",
             ));
         }
-        let names: Vec<Retained<NSString>> = source
-            .headers()
-            .iter()
-            .map(|(name, _)| NSString::from_str(name))
-            .collect();
-        let values: Vec<Retained<NSString>> = source
-            .headers()
-            .iter()
-            .map(|(_, value)| NSString::from_str(value))
-            .collect();
-        let names: Vec<&NSString> = names.iter().map(|name| &**name).collect();
-        let values: Vec<&AnyObject> = values.iter().map(|value| value.as_ref()).collect();
-        let headers = NSDictionary::from_slices(&names, &values);
-        // SAFETY: the key is an NSString constant exported by AVFoundation,
-        // and its value is an NSDictionary of NSString to NSString.
-        unsafe {
-            options.setObject_forKey(
-                &headers,
-                ProtocolObject::from_ref(ProtocolKey::http_header_fields()),
-            );
-        }
+        let url = source.as_url().unwrap_or_default();
+        return loader::asset(url, source.headers())
+            .map(|(asset, loader)| (asset, Some(loader)))
+            .ok_or_else(|| Error::new(ErrorKind::Unsupported, format!("not a valid URL: {url}")));
     }
-    // SAFETY: `url` is a valid NSURL and `options` holds only keys
-    // AVURLAsset documents (or exports), with values of the right types.
-    let asset =
-        unsafe { AVURLAsset::initWithURL_options(AVURLAsset::alloc(), &url, Some(&options)) };
-    Ok(asset)
+    // SAFETY: `url` is a valid NSURL, and there are no options.
+    let asset = unsafe { AVURLAsset::initWithURL_options(AVURLAsset::alloc(), &url, None) };
+    Ok((asset, None))
 }
 
 fn file_url(path: &Path) -> Result<Retained<NSURL>, Error> {
@@ -144,23 +128,4 @@ fn web_url(url: &str) -> Result<Retained<NSURL>, Error> {
     }
     NSURL::URLWithString(&NSString::from_str(url))
         .ok_or_else(|| Error::new(ErrorKind::Unsupported, format!("not a valid URL: {url}")))
-}
-
-/// Option keys AVFoundation exports but the objc2 bindings do not declare.
-struct ProtocolKey;
-
-impl ProtocolKey {
-    /// `AVURLAssetHTTPHeaderFieldsKey`: a dictionary of header fields that
-    /// the asset sends with every HTTP request it makes. AVFoundation exports
-    /// the symbol (it is in the SDK's `.tbd`), but no public header declares
-    /// it, so objc2-av-foundation does not either.
-    fn http_header_fields() -> &'static NSString {
-        #[link(name = "AVFoundation", kind = "framework")]
-        unsafe extern "C" {
-            static AVURLAssetHTTPHeaderFieldsKey: &'static NSString;
-        }
-        // SAFETY: the symbol is an immutable NSString constant that lives
-        // as long as the framework, which is never unloaded.
-        unsafe { AVURLAssetHTTPHeaderFieldsKey }
-    }
 }

@@ -3,15 +3,18 @@
 use std::time::Duration;
 
 use gpui::size;
-use gpui_av::{ColorInfo, ColorMatrix, ColorRange, MediaInfo, Rotation};
+use gpui_av::{ColorInfo, ColorMatrix, ColorRange, MediaInfo, Rotation, TransferFunction};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_av_foundation::{AVAssetTrack, AVMediaTypeAudio, AVMediaTypeVideo, AVPlayerItem};
 use objc2_core_foundation::{CFBoolean, CFRetained, CFString, CGAffineTransform};
 use objc2_core_media::{
     CMFormatDescription, CMTime, CMTimeFlags, kCMFormatDescriptionExtension_FullRangeVideo,
-    kCMFormatDescriptionExtension_YCbCrMatrix, kCMFormatDescriptionYCbCrMatrix_ITU_R_601_4,
-    kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2, kCMFormatDescriptionYCbCrMatrix_ITU_R_2020,
+    kCMFormatDescriptionExtension_TransferFunction, kCMFormatDescriptionExtension_YCbCrMatrix,
+    kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG,
+    kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ,
+    kCMFormatDescriptionYCbCrMatrix_ITU_R_601_4, kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2,
+    kCMFormatDescriptionYCbCrMatrix_ITU_R_2020,
 };
 
 /// What the session needs to know about the media beyond [`MediaInfo`].
@@ -141,18 +144,19 @@ fn rotation(transform: CGAffineTransform) -> Rotation {
     }
 }
 
-/// The colour range and matrix the format description states. A field the
-/// container leaves out stays `None`.
+/// The colour range, matrix and transfer function the format description
+/// states. A field the container leaves out stays `None`.
 fn color(description: &AnyObject) -> ColorInfo {
     // SAFETY: AVAssetTrack.formatDescriptions holds CMFormatDescriptions,
     // which are toll-free bridged CF objects.
     let description: &CMFormatDescription =
         unsafe { &*(description as *const AnyObject).cast::<CMFormatDescription>() };
     // SAFETY: constant CFString keys, read from a live format description.
-    let (range, matrix) = unsafe {
+    let (range, matrix, transfer) = unsafe {
         (
             description.extension(kCMFormatDescriptionExtension_FullRangeVideo),
             description.extension(kCMFormatDescriptionExtension_YCbCrMatrix),
+            description.extension(kCMFormatDescriptionExtension_TransferFunction),
         )
     };
     let range = range
@@ -167,11 +171,31 @@ fn color(description: &AnyObject) -> ColorInfo {
     let matrix = matrix
         .and_then(|value| value.downcast::<CFString>().ok())
         .and_then(|name| matrix_named(&name));
+    let transfer = transfer
+        .and_then(|value| value.downcast::<CFString>().ok())
+        .map(|name| transfer_named(&name));
     ColorInfo {
         range,
         matrix,
-        // Not read yet.
-        transfer: None,
+        transfer,
+    }
+}
+
+/// PQ and HLG by name; any other curve the file states is standard range.
+fn transfer_named(name: &CFString) -> TransferFunction {
+    // SAFETY: constant CFStrings exported by CoreMedia.
+    let (pq, hlg) = unsafe {
+        (
+            kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ,
+            kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG,
+        )
+    };
+    if *name == *pq {
+        TransferFunction::Pq
+    } else if *name == *hlg {
+        TransferFunction::Hlg
+    } else {
+        TransferFunction::Sdr
     }
 }
 
@@ -202,6 +226,25 @@ fn matrix_named(name: &CFRetained<CFString>) -> Option<ColorMatrix> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transfer_functions_map_by_name() {
+        // SAFETY: constant CFStrings exported by CoreMedia.
+        let (pq, hlg) = unsafe {
+            (
+                kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ,
+                kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG,
+            )
+        };
+        assert_eq!(transfer_named(pq), TransferFunction::Pq);
+        assert_eq!(transfer_named(hlg), TransferFunction::Hlg);
+        assert_eq!(
+            transfer_named(&CFString::from_static_str("ITU_R_709_2")),
+            TransferFunction::Sdr
+        );
+        assert!(transfer_named(pq).is_hdr());
+        assert!(!transfer_named(&CFString::from_static_str("sRGB")).is_hdr());
+    }
 
     fn turn(degrees: f64) -> CGAffineTransform {
         let radians = degrees.to_radians();

@@ -1,6 +1,8 @@
 //! Turning `NSError`s from AVFoundation into gpui-av errors.
 
 use gpui_av::{Error, ErrorKind};
+
+use super::loader;
 use objc2::Message;
 use objc2::rc::Retained;
 use objc2_av_foundation::{AVError, AVFoundationErrorDomain};
@@ -71,6 +73,16 @@ fn classify(chain: &[Link]) -> ErrorKind {
             _ => {}
         }
         match (link.domain.as_str(), link.code) {
+            // Our own loader's statuses and refusals, whatever domain
+            // AVFoundation wrapped their code in.
+            (_, code) if loader::decode_code(code).is_some() => {
+                return match loader::decode_code(code) {
+                    Some(Ok(401 | 403)) => ErrorKind::Unauthorized,
+                    Some(Ok(404 | 410)) => ErrorKind::NotFound,
+                    Some(Ok(_)) => ErrorKind::Network,
+                    _ => ErrorKind::Unsupported,
+                };
+            }
             // NSURLErrorUserAuthenticationRequired, NSURLErrorUserCancelledAuthentication,
             // NSURLErrorNoPermissionsToReadFile (an HTTP 403 after a redirect)
             ("NSURLErrorDomain", -1013 | -1012 | -1102) => return ErrorKind::Unauthorized,

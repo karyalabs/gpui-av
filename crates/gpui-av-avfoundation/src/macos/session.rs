@@ -35,6 +35,7 @@ use objc2_foundation::{
 
 use super::errors;
 use super::info::{self, Loaded};
+use super::loader::Loader;
 use super::probe::{self, HttpSource};
 
 /// How often the session checks the player for state changes. AVFoundation
@@ -55,6 +56,10 @@ const SAME_FRAME: Duration = Duration::from_millis(1);
 
 pub(crate) struct AvSession {
     inner: Rc<RefCell<Inner>>,
+    /// Our own HTTP loading, for a source with headers: AVFoundation holds
+    /// its delegate weakly, so the session keeps it. Declared after `inner`
+    /// so the player goes first.
+    _loader: Option<Loader>,
     observers: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
     _poll: Task<()>,
 }
@@ -112,6 +117,7 @@ struct Inner {
 impl AvSession {
     pub(crate) fn new(
         asset: Retained<AVURLAsset>,
+        loader: Option<Loader>,
         http: Option<HttpSource>,
         events: EventSink,
         mtm: MainThreadMarker,
@@ -128,6 +134,11 @@ impl AvSession {
             item.addOutput(&output);
             let player = AVPlayer::playerWithPlayerItem(Some(&item), mtm);
             player.setActionAtItemEnd(AVPlayerActionAtItemEnd::Pause);
+            if loader.is_some() {
+                // Apple's advice for a delegate that loads the media: the
+                // stall prediction assumes AVFoundation's own loading.
+                player.setAutomaticallyWaitsToMinimizeStalling(false);
+            }
             (player, item, output)
         };
         let notes = Rc::new(Notes::default());
@@ -173,6 +184,7 @@ impl AvSession {
             inner,
             observers,
             _poll: poll,
+            _loader: loader,
         }
     }
 }
