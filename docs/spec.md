@@ -300,7 +300,11 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   file in real HDR. GPUI's Metal layer is 8-bit without extended range
   and its surface takes only 8-bit NV12, so real HDR output on macOS
   needs either that changed in GPUI or a presenter of our own that lets
-  macOS draw the video (E8).
+  macOS draw the video (E8). The GPUI change is the chosen route
+  (section 4.3, patches 1 and 2); until it lands, standard range is the
+  only output on macOS. The media info reports the transfer function
+  (`Sdr`, `Pq`, `Hlg`), read from the track's format description, so an
+  app can tell which files are affected.
 - **The web (E3).** `gpui-av-web` plays a URL with one `HTMLVideoElement`
   per session, appended to the page and kept over the element's bounds
   with `position: fixed`: `paint` turns the `Placement` into a CSS box and
@@ -443,7 +447,7 @@ question; when it is done, the answer is folded into this spec.
 | E5 | Zero-copy on wgpu: implement `PrimitiveBatch::Surfaces` (NV12) in gpui-pre-wgpu | Patch works locally; decide whether to propose it to Zed |
 | E6 | Can we build on gpui-video-player or alhazen instead of writing backends? | **Done 2026-11-12: no; reuse ideas.** See `experiments/e6-existing-crates` |
 | E7 | Containers the platform will not open (MKV on AVFoundation and in browsers): our own Rust demuxer feeding VideoToolbox / WebCodecs (Mediabunny on the web), or an optional GStreamer backend on macOS? | The MKV clips in the corpus play on macOS and in Chrome through the chosen path; cost measured |
-| E8 | macOS: real HDR output. A second presenter that lets macOS draw the video in its own layer over the element (`AVSampleBufferDisplayLayer` or `AVPlayerLayer`, placed as the web overlay is; GPUI cannot draw over it), or an extended range surface path proposed to GPUI? | An HDR10 and an HLG clip show with extended brightness on an XDR display through the chosen path; cost and limits recorded |
+| E8 | macOS: real HDR output. Route chosen 2026-11-13: an extended range path in our GPUI (section 4.3, patches 1 and 2). The alternative, a second presenter that lets macOS draw the video in its own layer over the element (`AVSampleBufferDisplayLayer` or `AVPlayerLayer`, placed as the web overlay is; GPUI cannot draw over it), is not scheduled. | An HDR10 and an HLG clip show with extended brightness on an XDR display through the chosen path; cost and limits recorded |
 | L0 | Build `gpui-av-lab`, the playground and benchmark app (section 5.1) | Interactive mode and `--bench` play the tier A corpus from local and HTTP sources |
 
 Order: E0 and E6 first (cheap, and they can cancel work), then E1 and E3
@@ -706,6 +710,13 @@ tier A, and the next milestone is Linux (E2).
   a renamed fork (it would split apps off from gpui-kit, gpuicn and Matty).
   Reason (Arya): gpui-av should add no latency and work for nearly anyone,
   and GPUI must not become the bottleneck on any platform.
+- 2026-11-13 (E8): real HDR output on macOS comes through our GPUI's
+  extended range patches (section 4.3), not through a native-layer
+  presenter in the backend. Until then HDR media shows as a correct
+  standard range picture.
+- 2026-11-13 (R6): on macOS a source with request headers loads through
+  our own `AVAssetResourceLoaderDelegate`; headers go to the source's
+  origin only. `AVURLAssetHTTPHeaderFieldsKey` is gone.
 - 2026-11-13 (E1): the macOS backend is AVPlayer + AVPlayerItemVideoOutput
   drawn with `paint_surface`, converting frames to full-range NV12 with the
   BT.601 matrix that GPUI's shader assumes; `MediaInfo.color` still reports
