@@ -13,7 +13,10 @@ use gpui::{
     ParentElement, Render, SharedString, Stateful, StatefulInteractiveElement, Styled,
     Subscription, Task, Window, div, px, rgb,
 };
-use gpui_av::{Backend, ColorMatrix, ColorRange, PlaybackState, PlayerEvent, VideoPlayer, video};
+use gpui_av::{
+    Backend, ColorMatrix, ColorRange, PlaybackState, PlayerEvent, TransferFunction, VideoPlayer,
+    video,
+};
 use web_time::Instant;
 
 use crate::clips::Clip;
@@ -365,6 +368,19 @@ impl LabView {
                         None => "matrix unknown",
                     }
                 ),
+            ),
+            (
+                // What the media is, not what the screen shows: a backend
+                // may draw HDR media in standard range.
+                "dynamic range",
+                match info.color.transfer {
+                    Some(TransferFunction::Sdr) => "SDR",
+                    Some(TransferFunction::Pq) => "HDR (PQ)",
+                    Some(TransferFunction::Hlg) => "HDR (HLG)",
+                    Some(_) => "other",
+                    None => "unknown",
+                }
+                .to_string(),
             ),
             (
                 "video fps",

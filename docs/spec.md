@@ -53,6 +53,7 @@ for one thread. To start one, give the thread this repo and a prompt like:
 | E5 | Linux with a Vulkan GPU; it patches gpui-pre-wgpu locally |
 | E6 | Done |
 | E7 | A Mac and Chrome; MKV clips from the corpus |
+| E8 | A Mac with an HDR (XDR) display; HDR10 and HLG clips |
 | L0 | Any desktop for the app; a Jellyfin server for that source (optional) |
 
 Two traps from E6: test clips come from `scripts/make-clips.sh` (needs
@@ -283,6 +284,16 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   (`420f`, BT.601 colour properties). Rotated tracks go through an
   `AVVideoComposition`, since `paint_surface` cannot rotate. Request
   headers use `AVURLAssetHTTPHeaderFieldsKey` for now (section 6, R6).
+  HDR media comes out of that conversion as a tone-mapped standard range
+  picture, which is correct but not HDR: measured 2026-11-13 on a 4K
+  59.94 fps 10-bit AV1 HDR10 file (PQ, BT.2020), a frame from this path
+  matches Apple's own standard range rendition within 2 of 255 at six
+  points, at 59.5 fps with no skipped frames and 7% of a core (without a
+  window, so GPUI's drawing is not in that). A browser shows the same
+  file in real HDR. GPUI's Metal layer is 8-bit without extended range
+  and its surface takes only 8-bit NV12, so real HDR output on macOS
+  needs either that changed in GPUI or a presenter of our own that lets
+  macOS draw the video (E8).
 - **The web (E3).** `gpui-av-web` plays a URL with one `HTMLVideoElement`
   per session, appended to the page and kept over the element's bounds
   with `position: fixed`: `paint` turns the `Placement` into a CSS box and
@@ -343,8 +354,10 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   are the only code that differs per platform.
 - **Media info** carries duration, natural size (as shown, rotation
   applied), whether there is video, and as optional values the rotation
-  tag, whether there is audio, and colour range and matrix: a backend
-  leaves out what its decoder did not report, and never guesses.
+  tag, whether there is audio, and colour range, matrix and transfer
+  function (standard range, PQ or HLG, so an app can label HDR media): a
+  backend leaves out what its decoder did not report, and never guesses.
+  The transfer function describes the media, not the picture on screen.
 
 ## 5. Experiments
 
@@ -362,6 +375,7 @@ question; when it is done, the answer is folded into this spec.
 | E5 | Zero-copy on wgpu: implement `PrimitiveBatch::Surfaces` (NV12) in gpui-pre-wgpu | Patch works locally; decide whether to propose it to Zed |
 | E6 | Can we build on gpui-video-player or alhazen instead of writing backends? | **Done 2026-11-12: no; reuse ideas.** See `experiments/e6-existing-crates` |
 | E7 | Containers the platform will not open (MKV on AVFoundation and in browsers): our own Rust demuxer feeding VideoToolbox / WebCodecs (Mediabunny on the web), or an optional GStreamer backend on macOS? | The MKV clips in the corpus play on macOS and in Chrome through the chosen path; cost measured |
+| E8 | macOS: real HDR output. A second presenter that lets macOS draw the video in its own layer over the element (`AVSampleBufferDisplayLayer` or `AVPlayerLayer`, placed as the web overlay is; GPUI cannot draw over it), or an extended range surface path proposed to GPUI? | An HDR10 and an HLG clip show with extended brightness on an XDR display through the chosen path; cost and limits recorded |
 | L0 | Build `gpui-av-lab`, the playground and benchmark app (section 5.1) | Interactive mode and `--bench` play the tier A corpus from local and HTTP sources |
 
 Order: E0 and E6 first (cheap, and they can cancel work), then E1 and E3

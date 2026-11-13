@@ -59,6 +59,11 @@ pub struct ColorInfo {
     pub range: Option<ColorRange>,
     /// The YUV to RGB matrix.
     pub matrix: Option<ColorMatrix>,
+    /// How the media maps code values to brightness: standard range or one
+    /// of the HDR curves. This describes the media, not the picture on
+    /// screen: a backend may draw a standard range rendition of HDR media
+    /// (the macOS backend does, as GPUI draws in standard range).
+    pub transfer: Option<TransferFunction>,
 }
 
 /// Whether brightness runs 16 to 235 or 0 to 255 (for 8-bit video).
@@ -80,4 +85,23 @@ pub enum ColorMatrix {
     Bt709,
     /// ITU-R BT.2020 (ultra high definition, HDR).
     Bt2020,
+}
+
+/// How the video maps code values to brightness.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum TransferFunction {
+    /// A standard dynamic range curve (BT.709, BT.601, sRGB and the like).
+    Sdr,
+    /// The perceptual quantizer, SMPTE ST 2084: HDR10 and Dolby Vision.
+    Pq,
+    /// Hybrid log-gamma, ARIB STD-B67: broadcast and phone HDR.
+    Hlg,
+}
+
+impl TransferFunction {
+    /// Whether this is a high dynamic range curve.
+    pub fn is_hdr(self) -> bool {
+        matches!(self, TransferFunction::Pq | TransferFunction::Hlg)
+    }
 }

@@ -205,6 +205,7 @@ mod tests {
             color: ColorInfo {
                 range: Some(ColorRange::Limited),
                 matrix: Some(ColorMatrix::Bt709),
+                transfer: None,
             },
         };
         let checks = entry("h264-1280x720-rotate90.mp4").check(&info);

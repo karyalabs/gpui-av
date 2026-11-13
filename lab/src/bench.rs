@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use gpui::{AsyncApp, Entity};
-use gpui_av::{ColorMatrix, ColorRange, MediaInfo, PlaybackState, Stats};
+use gpui_av::{ColorMatrix, ColorRange, MediaInfo, PlaybackState, Stats, TransferFunction};
 use serde::Serialize;
 use web_time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -140,6 +140,8 @@ pub struct Reported {
     pub color_range: Option<&'static str>,
     /// `bt601`, `bt709`, `bt2020`, or `None` when unknown.
     pub color_matrix: Option<&'static str>,
+    /// `sdr`, `pq`, `hlg`, or `None` when unknown.
+    pub transfer: Option<&'static str>,
 }
 
 impl From<&MediaInfo> for Reported {
@@ -159,6 +161,12 @@ impl From<&MediaInfo> for Reported {
                 ColorMatrix::Bt601 => "bt601",
                 ColorMatrix::Bt709 => "bt709",
                 ColorMatrix::Bt2020 => "bt2020",
+                _ => "other",
+            }),
+            transfer: info.color.transfer.map(|transfer| match transfer {
+                TransferFunction::Sdr => "sdr",
+                TransferFunction::Pq => "pq",
+                TransferFunction::Hlg => "hlg",
                 _ => "other",
             }),
         }
