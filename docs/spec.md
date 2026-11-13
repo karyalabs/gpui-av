@@ -676,7 +676,11 @@ adjust them, in this file.
 10. **One app.** The lab's player view is one piece of code with no
     platform `cfg` in it; only backend selection differs per target.
 11. **CI.** The workspace builds and its tests pass on macOS and for
-    `wasm32-unknown-unknown`, against a pinned gpui-pre snapshot.
+    `wasm32-unknown-unknown`, against a pinned gpui-pre snapshot. While
+    the crate is early (Arya, 2026-11-13), CI only checks formatting and
+    that the workspace compiles on Linux; the macOS tests and the web
+    build are run locally before a merge. Heavier CI comes back once
+    there is more to protect.
 
 When the POC is done, E1 and E3 are marked done, L0 is marked done for
 tier A, and the next milestone is Linux (E2).
