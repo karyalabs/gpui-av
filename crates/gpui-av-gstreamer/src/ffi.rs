@@ -99,6 +99,7 @@ pub struct GstMemory {
     pub size: usize,
 }
 
+#[cfg(all(feature = "karya-gpui", target_os = "linux"))]
 /// The public head of `GstVideoMeta`; only read through a pointer.
 #[repr(C)]
 pub struct GstVideoMeta {
