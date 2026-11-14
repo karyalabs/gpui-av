@@ -30,7 +30,7 @@ decoders clips/*.mp4 clips/*.mov clips/*.webm 2>/dev/null | tee "$OUT/decoders-d
 echo "== decoder picked (software)"
 GST_PLUGIN_FEATURE_RANK=$SOFTWARE decoders clips/*.mp4 clips/*.webm | tee "$OUT/decoders-software.txt"
 
-for mode in default software; do
+for mode in ${MODES:-default software}; do
   if [ $mode = software ]; then export GST_PLUGIN_FEATURE_RANK=$SOFTWARE; else unset GST_PLUGIN_FEATURE_RANK; fi
   echo "== tier A bench, $mode decoders"
   pid=$(gpu_log "$OUT/gpu-tier-a-$mode.csv")
@@ -52,10 +52,12 @@ echo "== measure.py, default decoders"
 python3 measure.py clips/h264-1280x720.mp4 clips/h264-1920x1080.mp4 clips/h264-1920x1080-60fps.mp4 \
   clips/hevc-1920x1080.mp4 clips/h264-3840x2160.mp4 clips/h265-10bit-3840x2160-60fps.mp4 \
   clips/av1-10bit-3840x2160.mp4 2>&1 | tee "$OUT/measure-default.txt"
+case " ${MODES:-default software} " in *" software "*)
 echo "== measure.py, software decoders"
 GST_PLUGIN_FEATURE_RANK=$SOFTWARE python3 measure.py clips/h264-1280x720.mp4 clips/h264-1920x1080.mp4 \
   clips/h264-1920x1080-60fps.mp4 clips/hevc-1920x1080.mp4 clips/h264-3840x2160.mp4 \
   clips/h265-10bit-3840x2160-60fps.mp4 clips/av1-10bit-3840x2160.mp4 2>&1 | tee "$OUT/measure-software.txt"
+;; esac
 fi
 
 echo "== soak, 10 minutes of 1080p60, default decoders"

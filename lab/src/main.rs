@@ -334,6 +334,11 @@ fn launch(plan: Plan, cx: &mut App) {
                     title: Some("gpui-av lab".into()),
                     ..TitlebarOptions::default()
                 }),
+                // GPUI holds a window it thinks is inactive to 30 fps, which
+                // drops every other frame of 60 fps video. Video in a window
+                // without focus is ordinary (and on X11 with no window
+                // manager the window is never active).
+                inactive_frame_interval: None,
                 ..WindowOptions::default()
             },
             // Unattended runs choose their own clips; nothing autoplays.

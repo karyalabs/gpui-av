@@ -25,12 +25,25 @@ apt-get install -y -q --no-install-recommends \
   "libnvidia-decode-$driver$flavour" "libnvidia-encode-$driver$flavour" \
   nvidia-vaapi-driver vainfo ffmpeg python3 jq weston >/tmp/apt.log 2>&1 || { tail -20 /tmp/apt.log; }
 tail -1 /tmp/apt.log
+# The image's driver lags the archive, so apt brings newer userspace than the
+# loaded kernel module (NVML "Driver/library version mismatch", and GStreamer
+# then registers no NVDEC decoders). Load the module DKMS just built.
+if ! nvidia-smi >/dev/null 2>&1; then
+  echo "reloading the NVIDIA kernel module for the new userspace"
+  systemctl stop nvidia-persistenced 2>/dev/null
+  rmmod nvidia_uvm nvidia_drm nvidia_modeset nvidia
+  modprobe nvidia && modprobe nvidia_uvm && modprobe nvidia_drm modeset=1
+  nvidia-smi --query-gpu=name,driver_version --format=csv,noheader || exit 1
+fi
+rm -rf ~/.cache/gstreamer-1.0
 
+[ -n "${SKIP_BUNDLE:-}" ] || {
 echo "== bundle"
 mkdir -p /root/run && cd /root/run
 python3 $A get files/run.tar /root/run.tar || exit 1
 tar -xf /root/run.tar && rm /root/run.tar
 ls
+}
 
 echo "== X on the NVIDIA GPU"
 bus=$(nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader | head -1)
