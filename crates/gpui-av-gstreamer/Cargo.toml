@@ -11,6 +11,12 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Draw frames through Karya Labs' GPUI (spec 4.3, patch 4): NV12 straight
+# from the decoder, converted to RGB by the renderer, with no copy. Needs
+# the patched gpui-pre and gpui-pre-wgpu.
+karya-gpui = []
+
 # GStreamer is loaded when the first source opens, not linked: an app
 # built with this backend starts and builds on a machine without
 # GStreamer, and only this backend fails there (spec 4).

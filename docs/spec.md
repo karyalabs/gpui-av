@@ -19,10 +19,12 @@ backend (E3) plays the whole tier A corpus in Chrome, with flat memory
 over 10 minutes and an overlay that follows resize, scroll and a move
 between screens of different pixel ratio; Safari and Firefox are not run
 yet. E6 is done (section 5): we write our own backends and borrow ideas
-from `gpui-video-player`. E2 is answered (2026-11-13): the Linux backend
-(`gpui-av-gstreamer`) plays the tier A corpus, but drawing through
-`RenderImage` costs about as much CPU per frame as decoding, which makes
-zero-copy on wgpu (E5) the next step for Linux. When gpui-av works, its player
+from `gpui-video-player`. E2 is answered (2026-11-13, real GPU numbers 2026-11-14):
+the Linux backend (`gpui-av-gstreamer`) plays the tier A corpus and 4K
+10-bit clips with NVDEC, but drawing through `RenderImage` costs about as
+much CPU per frame as decoding. E5's first step (NV12 drawn by our GPUI,
+karyalabs/zed#7) cuts that CPU by half to three quarters on an NVIDIA A10;
+taking frames as dmabufs is the next step for Linux. When gpui-av works, its player
 moves into gpuicn (Karya Labs' GPUI component library) as a component, and
 Matty uses it from there. Until then this repo stands alone: no other Karya
 Labs repo depends on it, and nothing here needs Matty or gpuicn to build.
@@ -53,9 +55,9 @@ for one thread. To start one, give the thread this repo and a prompt like:
 |---|---|
 | E0 | Access to a real Mattermost server with video attachments (hint: the files search API, `POST /api/v4/teams/{team_id}/files/search`, with terms like `ext:mp4`) |
 | E1 | A Mac (AVFoundation, Metal) |
-| E2 | Linux; a desktop with a GPU gives real numbers, a cloud container only gives CPU numbers |
+| E2 | Linux; a desktop with a GPU gives real numbers, a cloud container only gives CPU numbers. An OVH GPU instance works (`experiments/e2-gstreamer/ovh`) |
 | E3, E4 | A browser; Chrome works in a cloud container, Firefox and Safari need a real machine |
-| E5 | Linux with a Vulkan GPU; it patches gpui-pre-wgpu locally |
+| E5 | Linux with a Vulkan GPU (an OVH A10 for NVIDIA); it patches gpui-pre-wgpu locally |
 | E6 | Done |
 | E7 | A Mac and Chrome; MKV clips from the corpus |
 | E8 | A Mac with an HDR (XDR) display; HDR10 and HLG clips |
@@ -326,7 +328,10 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   `paint_image` and frees the previous one. The appsink syncs to the
   pipeline clock (the audio clock), so a frame arrives when it is due;
   frames replaced before a paint, and those the sink drops for being late
-  (QoS), count as dropped. State comes from the bus, read every 20 ms on
+  (QoS), count as dropped. With the `karya-gpui` feature (our GPUI) the
+  appsink asks for NV12 instead and each sample, still mapped, becomes a
+  `gpui::VideoFrame` that `paint_video_frame` draws, with no conversion
+  or copy on the CPU (E5 step 1; `presenter()` reports "surface"). State comes from the bus, read every 20 ms on
   the main thread, as macOS polls AVPlayer. Request headers go into
   `souphttpsrc`'s `extra-headers` from playbin's `source-setup`; a source
   element without that property fails the media as `Unsupported`.
@@ -465,14 +470,22 @@ so on; 0.3.12 is Zed at `d2a4fb6`. gpui-av, gpuicn, Matty and gpui-kit
    the screen's EDR headroom in the video shader.
 3. A cross-platform surface type in core: today `PaintSurface` holds a
    CVPixelBuffer and exists on macOS and iOS only.
-4. Linux zero-copy (`gpui-pre-wgpu`): draw `PrimitiveBatch::Surfaces`
-   from dmabuf planes through wgpu's `texture_from_dmabuf_fd`, so VA-API
-   frames show with no copy (E5).
+4. Linux video (`gpui-pre-wgpu`), in two steps. Step 1, done
+   (karyalabs/zed#7): `gpui::VideoFrame` holds NV12 in memory the caller
+   owns and `Window::paint_video_frame` draws it; the renderer uploads the
+   planes and converts with the frame's own matrix and range. Step 2: draw
+   from dmabuf planes through wgpu's `texture_from_dmabuf_fd`, so NVDEC and
+   VA-API frames show with no copy, and P010 for 10-bit (E5).
 5. Web: draw a `VideoFrame` or `HTMLVideoElement` inside the canvas
    through WebGPU external textures once wgpu releases them, which removes
    the DOM overlay's limits (E4).
 6. Frame pacing: present at the video's own rate and report when a frame
-   actually reached the screen, for A/V sync and latency numbers.
+   actually reached the screen, for A/V sync and latency numbers. Found on
+   the A10 (2026-11-14): GPUI throttles a window it thinks is inactive to
+   30 fps by default (`WindowOptions::inactive_frame_interval`), which
+   halves 60 fps video in any window without focus; GPUI's X11 refresh
+   rate ignores DoubleScan modes; and our element asks for a frame every
+   tick while it waits for the next video frame.
 
 Inside gpui-av, the element already stops asking for frames when the
 backend does not need them (`Session::needs_frames`); idle cost is ours to
@@ -488,10 +501,10 @@ question; when it is done, the answer is folded into this spec.
 |---|---|---|
 | E0 | What do real Mattermost videos look like (containers, codecs, sizes, lengths)? | A table from a sample of real attachments |
 | E1 | macOS: does AVPlayer + `surface()` play 1080p60 smoothly inside a GPUI window? | A demo plays with sound; CPU and dropped frames measured. **Done 2026-11-13: yes**, 0 of 3600 frames dropped at ~19% of one core. See `experiments/e1-avfoundation` |
-| E2 | Linux: GStreamer + RenderImage at 1080p: what does the per-frame copy cost? | CPU, memory and dropped frames at 720p and 1080p. **Done 2026-11-13 (sandbox, no GPU): tier A passes from files and over HTTP; the copies cost about 1.9 ms of CPU per 720p frame and 5 to 6 ms per 1080p frame, as much as software decoding.** Dropped frames and real CPU need a desktop with a GPU: a listed gap. See `experiments/e2-gstreamer` |
+| E2 | Linux: GStreamer + RenderImage at 1080p: what does the per-frame copy cost? | CPU, memory and dropped frames at 720p and 1080p. **Done 2026-11-13 (sandbox, no GPU): tier A passes from files and over HTTP; the copies cost about 1.9 ms of CPU per 720p frame and 5 to 6 ms per 1080p frame, as much as software decoding. On an NVIDIA A10 (2026-11-14): tier A 15/15 and 4K/AV1/VP9 5/5 with NVDEC and in software; no drops up to 1080p60, flat memory over a 10 minute 1080p60 soak (0.4% dropped, 142% CPU); 4K 10-bit drops a third of its frames through the image path.** Wayland and VA-API on Intel/AMD are a listed gap. See `experiments/e2-gstreamer` |
 | E3 | Web: a DOM `<video>` overlay that tracks a GPUI element through scroll, resize and close | Works in Chrome, Firefox and Safari. **Done for Chrome 2026-11-13:** tier A passes, memory flat over 10 minutes, overlay follows resize, scroll and a window moved between a 2x and a 1x screen. Safari and Firefox are not run: a listed gap. See `experiments/e3-web-overlay` |
 | E4 | Web: WebCodecs frames drawn inside the canvas without an overlay | One clip plays in Chrome; cost measured against E3 |
-| E5 | Zero-copy on wgpu: implement `PrimitiveBatch::Surfaces` (NV12) in gpui-pre-wgpu | Patch works locally; decide whether to propose it to Zed |
+| E5 | Zero-copy on wgpu: implement `PrimitiveBatch::Surfaces` (NV12) in gpui-pre-wgpu | Patch works locally; decide whether to propose it to Zed. **Step 1 done 2026-11-14 (karyalabs/zed#7, NV12 from memory): on the A10 CPU falls by half to three quarters with NVDEC (1080p60 158% to 52%, 4K 10-bit HEVC 380% to 128% and no drops), copies 0.01 ms a frame.** Step 2 (dmabuf, no copy out of video memory) is next. See `experiments/e2-gstreamer` |
 | E6 | Can we build on gpui-video-player or alhazen instead of writing backends? | **Done 2026-11-12: no; reuse ideas.** See `experiments/e6-existing-crates` |
 | E7 | Containers the platform will not open (MKV on AVFoundation and in browsers): our own Rust demuxer feeding VideoToolbox / WebCodecs (Mediabunny on the web), or an optional GStreamer backend on macOS? | The MKV clips in the corpus play on macOS and in Chrome through the chosen path; cost measured |
 | E8 | macOS: real HDR output. Route chosen 2026-11-13: an extended range path in our GPUI (section 4.3, patches 1 and 2). The alternative, a second presenter that lets macOS draw the video in its own layer over the element (`AVSampleBufferDisplayLayer` or `AVPlayerLayer`, placed as the web overlay is; GPUI cannot draw over it), is not scheduled. | An HDR10 and an HLG clip show with extended brightness on an XDR display through the chosen path; cost and limits recorded |
@@ -758,6 +771,15 @@ clip in Chrome, not yet explained.
   against 81). Open: HLS with headers (fails as `Unsupported`).
 
 ## 7. Decisions
+
+- 2026-11-14 (E2, E5): on Linux, gpui-av draws NV12 through our GPUI
+  (`karya-gpui`, karyalabs/zed#7) and keeps `RenderImage` as the fallback
+  on stock gpui-pre. Measured on an OVH NVIDIA A10: NV12 halves to
+  quarters the CPU, removes the 4K 10-bit drops with NVDEC, and needs no
+  GPU-specific code. Next is dmabuf import (E5 step 2). Every window that
+  shows video sets `inactive_frame_interval: None`: GPUI's default 30 fps
+  cap for inactive windows, not the GPU or llvmpipe, was what held earlier
+  Linux runs to 21 to 30 fps.
 
 - 2026-11-13 (E2): the Linux backend is GStreamer `playbin` drawn as
   `RenderImage`s, with GStreamer loaded at run time. It plays tier A, but

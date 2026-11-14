@@ -127,9 +127,9 @@ pub struct GstAppSinkCallbacks {
 pub type GDestroyNotify = unsafe extern "C" fn(*mut c_void);
 
 macro_rules! library {
-    ($name:ident { $($function:ident: $signature:ty,)* }) => {
+    ($name:ident { $($(#[$attribute:meta])* $function:ident: $signature:ty,)* }) => {
         pub struct $name {
-            $(pub $function: $signature,)*
+            $($(#[$attribute])* pub $function: $signature,)*
         }
 
         impl $name {
@@ -178,6 +178,9 @@ library!(Gst {
     gst_object_unref: unsafe extern "C" fn(*mut c_void),
     gst_object_ref_sink: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
     gst_mini_object_unref: unsafe extern "C" fn(*mut c_void),
+    // Only the NV12 path keeps samples alive past the callback.
+    #[cfg_attr(not(feature = "karya-gpui"), allow(dead_code))]
+    gst_mini_object_ref: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
     gst_element_set_state: unsafe extern "C" fn(*mut c_void, c_int) -> c_int,
     gst_element_get_bus: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
     gst_element_get_static_pad: unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void,

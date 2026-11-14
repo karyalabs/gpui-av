@@ -77,11 +77,123 @@ owns its pixels and gives no way to reuse them), so the kernel maps fresh
 pages every frame.
 
 **Smoothness: not measurable here.** The sandbox's window draws about
-21 frames a second (llvmpipe renders GPUI's whole scene on the CPU), so
-frames shown, frames dropped, drift (about 65 ms, one window frame) and
-process CPU in the bench measure the sandbox, not the backend. Time to
-first frame was 85 to 180 ms and seeks 80 to 380 ms. Real numbers need a
-Linux desktop with a GPU.
+21 frames a second, so frames shown, frames dropped, drift (about 65 ms,
+one window frame) and process CPU in the bench measure the sandbox, not
+the backend. Time to first frame was 85 to 180 ms and seeks 80 to 380 ms.
+(Corrected 2026-11-14: the cap was GPUI's inactive-window throttle, not
+llvmpipe; see the next section. With it off the sandbox draws about
+59 frames a second.)
+
+## On a real GPU: OVH A10 (2026-11-14)
+
+Machine: OVH Public Cloud `a10-45` in GRA11: NVIDIA A10 (24 GB, driver
+580.196.07), 30 vCPU of an AMD EPYC 9554, 40 GB, Ubuntu 24.04 with its
+GStreamer 1.24. Xorg runs on the A10 with no window manager and a virtual
+2560x1440 screen; audio has no device (the bench is muted). The harness
+and every script are in `ovh/` (see its section below). Spend: ₹330 of
+the ₹12,000 budget, three billed hours.
+
+**GPUI on the A10: works, stock and with karyalabs/zed#5 alike.** wgpu
+picks the A10 (Vulkan) under Xorg and the window draws correctly. Under
+Xvfb it also picks the A10 and presents through a CPU copy, so even an X
+server the NVIDIA driver cannot drive gets a GPU-rendered window; zed#5
+(skip adapters that cannot present) changes nothing on this machine,
+since every adapter here can present. Under Weston's headless backend GPUI
+panics at start: "Wayland compositor does not provide wl_seat" (a GPUI
+bug for seatless compositors, not a GPU one).
+
+**The 30 fps cap was GPUI's, not the GPU's.** The first runs drew exactly
+30 frames a second whatever the present mode (FIFO, FIFO relaxed,
+immediate) or the screen's refresh rate (85 or 60 Hz), so every 60 fps
+clip dropped half its frames. GPUI holds a window it thinks is inactive to
+`WindowOptions::inactive_frame_interval`, 33 ms by default, and on X11
+without a window manager no window is ever active. That throttle was also
+the sandbox's 21 fps. The lab now sets it to `None`; every app that shows
+video needs the same, since video playing in a window without focus is
+ordinary. The numbers below are with the throttle off.
+
+**Decoders.** GStreamer picks NVDEC by itself for every clip it has a
+decoder for: `nvh264dec`, `nvh265dec` (10-bit too), `nvav1dec` and
+`nvvp9dec`. FFV1 stays on gst-libav. The NVIDIA VA-API driver
+(`nvidia-vaapi-driver`) also loads, but GStreamer ranks `nv*dec` first.
+
+**Result: everything plays, and NV12 into GPUI cuts the CPU by half to
+three quarters.** Tier A passes 15 of 15 and the five heavier clips
+(`make-gpu-clips.sh`: 4K H.264, 4K HEVC 10-bit 60 fps, 4K AV1 10-bit,
+1080p60 AV1 and VP9) 5 of 5, on every path below. Process CPU in percent
+of one core, and video frames dropped, through the image path (convert to
+BGRA, copy into a `RenderImage`, GPUI uploads it) and through NV12 drawn
+as a surface by our GPUI (E5, karyalabs/zed#7; `--features
+karya-gpui-linux`):
+
+| Clip | NVDEC, image | NVDEC, NV12 | Software, image | Software, NV12 |
+|---|---|---|---|---|
+| H.264 1280x720 30 fps | 70%, 0 | 43%, 0 | 83%, 0 | 58%, 0 |
+| H.264 1920x1080 30 fps | 95%, 0 | 32%, 0 | 129%, 0 | 112%, 0 |
+| H.264 1920x1080 60 fps | 158%, 0 | 52%, 0 | 166%, 0 | 133%, 0 |
+| HEVC 1920x1080 30 fps | 103%, 0 | 53%, 0 | 129%, 0 | 120%, 0 |
+| AV1 1920x1080 60 fps | 156%, 0 | 50%, 0 | 158%, 0.1% | 100%, 0 |
+| VP9 1920x1080 60 fps | 143%, 0 | 55%, 0 | 195%, 0 | 156%, 0 |
+| H.264 3840x2160 30 fps | 201%, 0 | 55%, 0 | 255%, 0 | 202%, 0 |
+| HEVC 10-bit 3840x2160 60 fps | 380%, 33% | 128%, 0 | 730%, 8% | 585%, 0.1% |
+| AV1 10-bit 3840x2160 30 fps | 365%, 22% | 102%, 0 | 353%, 1.6% | 181%, 10% |
+
+- The backend's own counters on the image path: the copy into the image
+  costs about 1.2 ms a frame at 720p, 2.4 to 4.2 ms at 1080p and 13 to
+  22 ms at 4K, plus 0.3 to 0.8 ms (5 to 7.6 ms at 4K) in `paint_image`.
+  With NV12 both are 0.01 ms or less, because the mapped GStreamer buffer
+  goes to the renderer as it is.
+- With NVDEC the image path cannot keep up with 4K 10-bit: the BGRA
+  conversion of a 10-bit frame alone takes 55 to 85 ms (`measure.py`),
+  so a third of the frames drop. NV12 plays them with no drops. In
+  software, NV12 still converts 10-bit to 8-bit on the CPU, which is why
+  4K AV1 10-bit drops 10% there; P010 in the renderer would remove that.
+- Memory falls too: 10 to 30% less with NV12 (no BGRA image per frame).
+- 10 minute soak, 1080p60 H.264 with NVDEC: the image path showed 35,709
+  frames, dropped 154 (0.4%), CPU 142%, memory +1.4 MB; NV12 showed 35,742,
+  dropped 130, CPU 52%, memory +2.1 MB. Drift stayed within 33 ms (two
+  frames at 60 fps) in both, and memory is flat.
+- Time to first frame: 50 to 260 ms, except about 2 s for the first clip
+  of each run (NVDEC and CUDA starting up).
+- Software decode costs this machine's CPU per frame (`measure.py`, CPU ms
+  per frame, best of three, one thread converting): H.264 720p 5.9, 1080p
+  9.1, 1080p60 5.3, HEVC 1080p 15.0, H.264 4K 20.7, HEVC 10-bit 4K 25.5,
+  AV1 10-bit 4K 32.4. The conversion to BGRA adds 0.3 to 3 ms at 1080p,
+  18 ms at 4K and 55 to 85 ms for 10-bit 4K. With NVDEC, `measure.py`
+  cannot run as written: the decoder outputs CUDA memory, which
+  `caps=video/x-raw` does not accept.
+
+What is still not zero-copy: with NVDEC, each frame is copied from video
+memory to system memory (the appsink asks for NV12 in system memory) and
+then uploaded again by the renderer. That is most of what the NVDEC + NV12
+column still costs, and what E5's dmabuf step removes.
+
+**Two more GPUI findings.**
+
+- With the throttle off, the window draws 170 times a second on an 85 Hz
+  screen whatever the video's rate: GPUI's X11 refresh rate ignores the
+  mode's DoubleScan flag (the virtual screen's 1024x768 mode has it), and
+  the element asks for a frame every tick while it waits for the next
+  video frame. Both waste CPU; the second is ours (section 4.3, patch 6).
+- `apt` on OVH's NVIDIA image installs newer driver userspace than the
+  loaded kernel module ("Driver/library version mismatch"), after which
+  GStreamer registers no NVDEC decoders; `ovh/setup.sh` reloads the
+  module DKMS built.
+
+### The OVH harness (`ovh/`)
+
+No SSH is needed (and the cloud container this ran from cannot reach port
+22): `box.py launch` creates an instance whose user-data starts
+`agent.py`, which takes job scripts from a Swift container, runs them in
+order and streams their logs back. The instance deletes itself at its
+deadline, after 20 idle minutes, or through a systemd timer if the agent
+dies. `box.py` keeps a ledger of every instance and refuses a launch that
+could pass the budget. Jobs: `setup.sh` (packages, Xorg on the GPU, NVDEC
+check), `baseline.sh` (tier A, heavier clips, `measure.py`, soak),
+`gpui.sh` (Xorg, Xvfb, llvmpipe and Weston, stock and zed#5), `e5.sh` and
+`rerun.sh`. A10s were often unavailable in GRA11 ("No valid host was
+found", for six hours on 2026-11-13); failed builds are not billed and
+`--wait-capacity` keeps trying.
 
 ## A Linux VM on a Mac (2026-11-13)
 
@@ -115,15 +227,18 @@ Venus device at all).
 
 ## Next
 
-- The RenderImage path is correct and is the Linux default, but its
-  copies cost as much as decoding. Zero-copy on wgpu (E5, our GPUI's patch
-  4: draw dmabuf frames from VA-API with no copy) is where the cost goes
-  away, and moves up in priority.
-- Cheaper on the way there: convert YUV to BGRA straight into the image's
-  buffer (one pass instead of two copies), and a GPUI change that lets an
-  image's buffer be reused (no fresh pages per frame).
-- Run the bench and a 1080p60 soak on a Linux desktop with a GPU, on X11
-  and Wayland, with VA-API decode.
+- NV12 into our GPUI (karyalabs/zed#7) is the Linux path to ship behind
+  `karya-gpui`: it halves to quarters the CPU and plays 4K 10-bit with
+  NVDEC where the image path drops a third of the frames. The image path
+  stays as the fallback on stock gpui-pre.
+- E5 step 2: take NVDEC and VA-API frames as dmabufs and import them with
+  wgpu's `texture_from_dmabuf_fd`, removing the copy out of video memory
+  and the upload back. Then P010 for 10-bit.
+- Ask apps (and our own player element) to turn GPUI's inactive-window
+  throttle off while video plays, and stop asking for a frame every tick
+  while waiting for the next video frame (pace to the video's rate).
+- Wayland on a real desktop (GPUI needs a compositor with a seat), and an
+  Intel or AMD GPU with VA-API: not covered by OVH.
 - GStreamer fills in colour for streams that state it and leaves it empty
   otherwise (seen on the untagged VP9, MKV and AV1 clips); check with
   tier B whether any decoder fills in a guess.

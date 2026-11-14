@@ -18,15 +18,35 @@ use crate::ffi::{self, Api, GstMessage};
 /// (rotation tags), convert it to the BGRA GPUI's images hold, and hand it
 /// to us. `n-threads=0` lets the conversion use every core, which keeps
 /// the time from decode to screen short.
+#[cfg(not(feature = "karya-gpui"))]
 const VIDEO_SINK: &str = "videoflip video-direction=auto ! videoconvert n-threads=0 \
      ! appsink name=sink caps=video/x-raw,format=BGRA sync=true qos=true \
+     max-lateness=20000000 enable-last-sample=false max-buffers=1 drop=true";
+
+/// With Karya Labs' GPUI the renderer converts YUV itself (spec 4.3, patch
+/// 4), so frames stay NV12, which most decoders give anyway (the converter
+/// then passes them through), and reach GPUI with no copy at all.
+#[cfg(feature = "karya-gpui")]
+const VIDEO_SINK: &str = "videoflip video-direction=auto ! videoconvert n-threads=0 \
+     ! appsink name=sink caps=video/x-raw,format=NV12 sync=true qos=true \
      max-lateness=20000000 enable-last-sample=false max-buffers=1 drop=true";
 
 /// A decoded frame, ready to paint.
 pub(crate) struct Frame {
     /// The presentation time, when the stream gave one.
     pub pts: Option<Duration>,
-    pub image: Arc<RenderImage>,
+    pub picture: Picture,
+}
+
+/// A frame's pixels in the form GPUI draws them.
+#[derive(Clone)]
+pub(crate) enum Picture {
+    /// BGRA, copied into an image (stock GPUI).
+    #[cfg_attr(feature = "karya-gpui", allow(dead_code))]
+    Image(Arc<RenderImage>),
+    /// The decoder's own NV12 buffer, drawn by Karya Labs' GPUI.
+    #[cfg(feature = "karya-gpui")]
+    Video(Arc<gpui::VideoFrame>),
 }
 
 /// What the streaming thread leaves for the main thread.
@@ -792,7 +812,7 @@ unsafe fn take_sample(sink: *mut c_void, data: *mut c_void, preroll: bool) -> ff
 
 /// # Safety
 /// `sample` must be a valid sample.
-unsafe fn copy_frame(api: &Api, sample: *mut c_void) -> Option<Frame> {
+unsafe fn copy_frame(api: &'static Api, sample: *mut c_void) -> Option<Frame> {
     let gst = &api.gst;
     // SAFETY: per the contract; the buffer is unmapped before returning.
     unsafe {
@@ -806,6 +826,15 @@ unsafe fn copy_frame(api: &Api, sample: *mut c_void) -> Option<Frame> {
         (gst.gst_structure_get_int)(structure, c"width".as_ptr(), &mut width);
         (gst.gst_structure_get_int)(structure, c"height".as_ptr(), &mut height);
         let (width, height) = (u32::try_from(width).ok()?, u32::try_from(height).ok()?);
+        #[cfg(feature = "karya-gpui")]
+        {
+            let colorimetry = ffi::string((gst.gst_structure_get_string)(
+                structure,
+                c"colorimetry".as_ptr(),
+            ));
+            return video_frame(api, sample, width, height, colorimetry.as_deref());
+        }
+        #[cfg_attr(feature = "karya-gpui", allow(unreachable_code))]
         let row = width as usize * 4;
         let pts = (*buffer).pts;
         let mut map = ffi::GstMapInfo::default();
@@ -835,11 +864,120 @@ unsafe fn copy_frame(api: &Api, sample: *mut c_void) -> Option<Frame> {
         let image = RgbaImage::from_raw(width, height, pixels?)?;
         Some(Frame {
             pts: (pts != ffi::GST_CLOCK_TIME_NONE).then(|| Duration::from_nanos(pts)),
-            image: Arc::new(RenderImage::new(SmallVec::from_elem(
+            picture: Picture::Image(Arc::new(RenderImage::new(SmallVec::from_elem(
                 ImageFrame::new(image),
                 1,
-            ))),
+            )))),
         })
+    }
+}
+
+/// A sample whose buffer stays mapped for as long as GPUI needs its bytes.
+#[cfg(feature = "karya-gpui")]
+struct MappedSample {
+    api: &'static Api,
+    sample: *mut c_void,
+    buffer: *mut ffi::GstBuffer,
+    map: ffi::GstMapInfo,
+}
+
+// SAFETY: samples and buffers are reference counted with atomics, and the
+// mapping is read-only, so any thread may read it or drop it.
+#[cfg(feature = "karya-gpui")]
+unsafe impl Send for MappedSample {}
+#[cfg(feature = "karya-gpui")]
+unsafe impl Sync for MappedSample {}
+
+#[cfg(feature = "karya-gpui")]
+impl AsRef<[u8]> for MappedSample {
+    fn as_ref(&self) -> &[u8] {
+        // SAFETY: mapped for reading until drop.
+        unsafe { std::slice::from_raw_parts(self.map.data, self.map.size) }
+    }
+}
+
+#[cfg(feature = "karya-gpui")]
+impl Drop for MappedSample {
+    fn drop(&mut self) {
+        // SAFETY: we mapped the buffer and own the sample reference.
+        unsafe {
+            (self.api.gst.gst_buffer_unmap)(self.buffer, &mut self.map);
+            (self.api.gst.gst_mini_object_unref)(self.sample);
+        }
+    }
+}
+
+/// Wraps an NV12 sample as a GPUI video frame without copying it. Takes a
+/// reference to `sample` of its own.
+///
+/// # Safety
+/// `sample` must be a valid sample with NV12 caps of `width` by `height`.
+#[cfg(feature = "karya-gpui")]
+unsafe fn video_frame(
+    api: &'static Api,
+    sample: *mut c_void,
+    width: u32,
+    height: u32,
+    colorimetry: Option<&str>,
+) -> Option<Frame> {
+    let gst = &api.gst;
+    // SAFETY: per the contract; the new reference is released by
+    // `MappedSample`, or here when mapping fails.
+    let mapped = unsafe {
+        let buffer = (gst.gst_sample_get_buffer)(sample);
+        if buffer.is_null() {
+            return None;
+        }
+        (gst.gst_mini_object_ref)(sample);
+        let mut map = ffi::GstMapInfo::default();
+        if (gst.gst_buffer_map)(buffer, &mut map, ffi::GST_MAP_READ) == 0 {
+            (gst.gst_mini_object_unref)(sample);
+            return None;
+        }
+        MappedSample {
+            api,
+            sample,
+            buffer,
+            map,
+        }
+    };
+    // SAFETY: a valid buffer, alive as long as `mapped`.
+    let pts = unsafe { (*mapped.buffer).pts };
+    // The appsink takes no video meta, so the layout is GStreamer's default
+    // for NV12: rows padded to four bytes, chroma after the (even) luma rows.
+    let stride = width.next_multiple_of(4);
+    let chroma_offset = stride as usize * height.next_multiple_of(2) as usize;
+    let colour = video_colour(colorimetry, height);
+    let frame = gpui::VideoFrame::nv12(
+        width,
+        height,
+        colour,
+        mapped,
+        (0, stride),
+        (chroma_offset, stride),
+    )
+    .ok()?;
+    Some(Frame {
+        pts: (pts != ffi::GST_CLOCK_TIME_NONE).then(|| Duration::from_nanos(pts)),
+        picture: Picture::Video(Arc::new(frame)),
+    })
+}
+
+/// The YUV matrix and range GPUI converts with: the stream's, or what
+/// players assume for its size when it states none (BT.601 below 720 rows).
+#[cfg(feature = "karya-gpui")]
+fn video_colour(colorimetry: Option<&str>, height: u32) -> gpui::VideoColour {
+    let info = colorimetry.map(parse_colorimetry).unwrap_or_default();
+    let matrix = match info.matrix {
+        Some(ColorMatrix::Bt601) => gpui::VideoMatrix::Bt601,
+        Some(ColorMatrix::Bt709) => gpui::VideoMatrix::Bt709,
+        Some(ColorMatrix::Bt2020) => gpui::VideoMatrix::Bt2020,
+        _ if height < 720 => gpui::VideoMatrix::Bt601,
+        _ => gpui::VideoMatrix::Bt709,
+    };
+    gpui::VideoColour {
+        matrix,
+        full_range: info.range == Some(ColorRange::Full),
     }
 }
 

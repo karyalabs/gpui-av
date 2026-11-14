@@ -1,0 +1,10 @@
+{
+  "description": "Heavier clips for runs on a machine with a GPU (experiments/e2-gstreamer/ovh): 4K and 10-bit, made by make-gpu-clips.sh. No audio; colour is not checked.",
+  "clips": [
+    {"file": "h264-3840x2160.mp4", "video_codec": "h264", "width": 3840, "height": 2160, "fps": 30, "duration": 20, "expect": "plays", "play_seconds": 15},
+    {"file": "h265-10bit-3840x2160-60fps.mp4", "video_codec": "hevc", "width": 3840, "height": 2160, "fps": 60, "duration": 20, "expect": "plays", "play_seconds": 15},
+    {"file": "av1-10bit-3840x2160.mp4", "video_codec": "av1", "width": 3840, "height": 2160, "fps": 30, "duration": 10, "expect": "plays", "play_seconds": 8},
+    {"file": "av1-1920x1080-60fps.mp4", "video_codec": "av1", "width": 1920, "height": 1080, "fps": 60, "duration": 30, "expect": "plays", "play_seconds": 15},
+    {"file": "vp9-1920x1080-60fps.webm", "video_codec": "vp9", "width": 1920, "height": 1080, "fps": 60, "duration": 30, "expect": "plays", "play_seconds": 15}
+  ]
+}

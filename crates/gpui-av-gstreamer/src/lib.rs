@@ -76,7 +76,11 @@ mod native {
         }
 
         fn presenter(&self) -> &'static str {
-            "image"
+            if cfg!(feature = "karya-gpui") {
+                "surface"
+            } else {
+                "image"
+            }
         }
 
         fn open(
