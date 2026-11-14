@@ -87,6 +87,34 @@ pub struct GstBuffer {
     pub offset_end: u64,
 }
 
+/// The public head of `GstMemory`; only read through a pointer.
+#[repr(C)]
+pub struct GstMemory {
+    pub mini_object: GstMiniObject,
+    pub allocator: *mut c_void,
+    pub parent: *mut c_void,
+    pub maxsize: usize,
+    pub align: usize,
+    pub offset: usize,
+    pub size: usize,
+}
+
+/// The public head of `GstVideoMeta`; only read through a pointer.
+#[repr(C)]
+pub struct GstVideoMeta {
+    pub meta_flags: c_uint,
+    pub meta_info: *const c_void,
+    pub buffer: *mut GstBuffer,
+    pub flags: c_uint,
+    pub format: c_int,
+    pub id: c_int,
+    pub width: c_uint,
+    pub height: c_uint,
+    pub n_planes: c_uint,
+    pub offset: [usize; 4],
+    pub stride: [c_int; 4],
+}
+
 #[repr(C)]
 pub struct GstMapInfo {
     pub memory: *mut c_void,
@@ -209,6 +237,34 @@ library!(Gst {
     gst_buffer_map: unsafe extern "C" fn(*mut GstBuffer, *mut GstMapInfo, c_int) -> gboolean,
     gst_buffer_unmap: unsafe extern "C" fn(*mut GstBuffer, *mut GstMapInfo),
     gst_filename_to_uri: unsafe extern "C" fn(*const c_char, *mut *mut GError) -> *mut c_char,
+    // Only the dmabuf path reads a buffer's memories and caps features.
+    #[cfg_attr(not(all(feature = "karya-gpui", target_os = "linux")), allow(dead_code))]
+    gst_buffer_find_memory: unsafe extern "C" fn(*mut GstBuffer, usize, usize, *mut c_uint, *mut c_uint, *mut usize) -> gboolean,
+    #[cfg_attr(not(all(feature = "karya-gpui", target_os = "linux")), allow(dead_code))]
+    gst_buffer_peek_memory: unsafe extern "C" fn(*mut GstBuffer, c_uint) -> *mut GstMemory,
+    #[cfg_attr(not(all(feature = "karya-gpui", target_os = "linux")), allow(dead_code))]
+    gst_caps_get_features: unsafe extern "C" fn(*const c_void, c_uint) -> *const c_void,
+    #[cfg_attr(not(all(feature = "karya-gpui", target_os = "linux")), allow(dead_code))]
+    gst_caps_features_contains: unsafe extern "C" fn(*const c_void, *const c_char) -> gboolean,
+});
+
+/// What the dmabuf path needs beyond GStreamer's core: a buffer's plane
+/// layout and its memories' file descriptors.
+#[cfg(all(feature = "karya-gpui", target_os = "linux"))]
+pub struct Dmabuf {
+    pub video: GstVideo,
+    pub allocators: GstAllocators,
+}
+
+#[cfg(all(feature = "karya-gpui", target_os = "linux"))]
+library!(GstVideo {
+    gst_buffer_get_video_meta: unsafe extern "C" fn(*mut GstBuffer) -> *const GstVideoMeta,
+});
+
+#[cfg(all(feature = "karya-gpui", target_os = "linux"))]
+library!(GstAllocators {
+    gst_is_dmabuf_memory: unsafe extern "C" fn(*mut GstMemory) -> gboolean,
+    gst_dmabuf_memory_get_fd: unsafe extern "C" fn(*mut GstMemory) -> c_int,
 });
 
 library!(GstApp {
@@ -228,6 +284,9 @@ pub struct Api {
     pub gobject: GObject,
     pub gst: Gst,
     pub app: GstApp,
+    /// Present when GStreamer's allocators library is installed.
+    #[cfg(all(feature = "karya-gpui", target_os = "linux"))]
+    pub dmabuf: Option<Dmabuf>,
     /// GStreamer's version, for logs and the experiment's notes.
     pub version: (u32, u32, u32),
     // Unloading GStreamer while its threads run would crash; the libraries
@@ -314,11 +373,35 @@ fn load() -> Result<Api, String> {
     let (mut major, mut minor, mut micro, mut nano) = (0, 0, 0, 0);
     // SAFETY: plain out parameters.
     unsafe { (gst.gst_version)(&mut major, &mut minor, &mut micro, &mut nano) };
+    #[cfg(all(feature = "karya-gpui", target_os = "linux"))]
+    let dmabuf = {
+        // SAFETY: GStreamer's allocators library, which the signatures
+        // describe; plugins-base installs it with libgstvideo.
+        match unsafe { Library::new("libgstallocators-1.0.so.0") } {
+            Ok(allocators_library) => {
+                // SAFETY: each library is the one the table describes.
+                let tables = unsafe {
+                    (
+                        GstVideo::load(&libraries[4]),
+                        GstAllocators::load(&allocators_library),
+                    )
+                };
+                libraries.push(allocators_library);
+                match tables {
+                    (Ok(video), Ok(allocators)) => Some(Dmabuf { video, allocators }),
+                    _ => None,
+                }
+            }
+            Err(_) => None,
+        }
+    };
     Ok(Api {
         glib,
         gobject,
         gst,
         app,
+        #[cfg(all(feature = "karya-gpui", target_os = "linux"))]
+        dmabuf,
         version: (major, minor, micro),
         _libraries: libraries,
     })

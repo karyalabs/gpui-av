@@ -31,6 +31,30 @@ const VIDEO_SINK: &str = "videoflip video-direction=auto ! videoconvert n-thread
      ! appsink name=sink caps=video/x-raw,format=NV12 sync=true qos=true \
      max-lateness=20000000 enable-last-sample=false max-buffers=1 drop=true";
 
+/// With `GPUI_AV_DMABUF=1` (an experiment, E5 step 2): frames stay in the
+/// hardware decoder's memory and reach GPUI as dmabufs. No converter, so no
+/// rotation and no software decoders: only a decoder that outputs dmabufs
+/// (GStreamer's VA-API decoders) can link.
+#[cfg(all(feature = "karya-gpui", target_os = "linux"))]
+const VIDEO_SINK_DMABUF: &str = "appsink name=sink caps=video/x-raw(memory:DMABuf),format=DMA_DRM \
+     sync=true qos=true max-lateness=20000000 enable-last-sample=false max-buffers=1 drop=true";
+
+/// The video branch for this process: see `VIDEO_SINK_DMABUF`.
+#[cfg(all(feature = "karya-gpui", target_os = "linux"))]
+fn video_sink(api: &Api) -> &'static str {
+    if api.dmabuf.is_some() && std::env::var_os("GPUI_AV_DMABUF").is_some_and(|value| value == "1")
+    {
+        VIDEO_SINK_DMABUF
+    } else {
+        VIDEO_SINK
+    }
+}
+
+#[cfg(not(all(feature = "karya-gpui", target_os = "linux")))]
+fn video_sink(_api: &Api) -> &'static str {
+    VIDEO_SINK
+}
+
 /// A decoded frame, ready to paint.
 pub(crate) struct Frame {
     /// The presentation time, when the stream gave one.
@@ -167,7 +191,7 @@ impl Pipeline {
             let playbin = (gst.gst_object_ref_sink)(playbin);
             let playbin_ref = Object(playbin);
 
-            let description = c_string(VIDEO_SINK)?;
+            let description = c_string(video_sink(api))?;
             let mut error = ptr::null_mut();
             let bin = (gst.gst_parse_bin_from_description)(description.as_ptr(), 1, &mut error);
             if bin.is_null() {
@@ -832,6 +856,25 @@ unsafe fn copy_frame(api: &'static Api, sample: *mut c_void) -> Option<Frame> {
                 structure,
                 c"colorimetry".as_ptr(),
             ));
+            #[cfg(target_os = "linux")]
+            if (gst.gst_caps_features_contains)(
+                (gst.gst_caps_get_features)(caps, 0),
+                c"memory:DMABuf".as_ptr(),
+            ) != 0
+            {
+                let drm_format = ffi::string((gst.gst_structure_get_string)(
+                    structure,
+                    c"drm-format".as_ptr(),
+                ));
+                return dmabuf_frame(
+                    api,
+                    sample,
+                    width,
+                    height,
+                    drm_format.as_deref(),
+                    colorimetry.as_deref(),
+                );
+            }
             return video_frame(api, sample, width, height, colorimetry.as_deref());
         }
         #[cfg_attr(feature = "karya-gpui", allow(unreachable_code))]
@@ -961,6 +1004,125 @@ unsafe fn video_frame(
         pts: (pts != ffi::GST_CLOCK_TIME_NONE).then(|| Duration::from_nanos(pts)),
         picture: Picture::Video(Arc::new(frame)),
     })
+}
+
+/// Keeps a sample, and so its decoder surface, alive.
+#[cfg(all(feature = "karya-gpui", target_os = "linux"))]
+struct SampleRef {
+    api: &'static Api,
+    sample: *mut c_void,
+}
+
+// SAFETY: samples are reference counted with atomics.
+#[cfg(all(feature = "karya-gpui", target_os = "linux"))]
+unsafe impl Send for SampleRef {}
+#[cfg(all(feature = "karya-gpui", target_os = "linux"))]
+unsafe impl Sync for SampleRef {}
+
+#[cfg(all(feature = "karya-gpui", target_os = "linux"))]
+impl Drop for SampleRef {
+    fn drop(&mut self) {
+        // SAFETY: we own this reference.
+        unsafe { (self.api.gst.gst_mini_object_unref)(self.sample) };
+    }
+}
+
+/// Wraps a DMA_DRM sample holding NV12 as a GPUI video frame without
+/// touching its pixels. Takes a reference to `sample` of its own.
+///
+/// # Safety
+/// `sample` must be a valid sample with DMABuf caps of `width` by `height`.
+#[cfg(all(feature = "karya-gpui", target_os = "linux"))]
+unsafe fn dmabuf_frame(
+    api: &'static Api,
+    sample: *mut c_void,
+    width: u32,
+    height: u32,
+    drm_format: Option<&str>,
+    colorimetry: Option<&str>,
+) -> Option<Frame> {
+    use std::os::fd::BorrowedFd;
+    let dmabuf = api.dmabuf.as_ref()?;
+    // "NV12" (linear) or "NV12:0x0300000000606010" (with a modifier).
+    let (fourcc, modifier) = match drm_format?.split_once(':') {
+        Some((fourcc, modifier)) => (
+            fourcc,
+            u64::from_str_radix(modifier.trim_start_matches("0x"), 16).ok()?,
+        ),
+        None => (drm_format?, 0),
+    };
+    if fourcc != "NV12" {
+        log_once(&format!(
+            "dmabuf frames in {fourcc} are not drawn (NV12 only)"
+        ));
+        return None;
+    }
+    let gst = &api.gst;
+    // SAFETY: per the contract. The planes' descriptors are borrowed from
+    // the buffer's memories and duplicated before the sample can go.
+    unsafe {
+        let buffer = (gst.gst_sample_get_buffer)(sample);
+        if buffer.is_null() {
+            return None;
+        }
+        let meta = (dmabuf.video.gst_buffer_get_video_meta)(buffer);
+        if meta.is_null() || (*meta).n_planes < 2 {
+            log_once("a dmabuf frame came without its plane layout");
+            return None;
+        }
+        let plane = |index: usize| -> Option<gpui::DmabufPlane> {
+            let (mut memory_index, mut length, mut skip) = (0, 0, 0);
+            if (gst.gst_buffer_find_memory)(
+                buffer,
+                (*meta).offset[index],
+                1,
+                &mut memory_index,
+                &mut length,
+                &mut skip,
+            ) == 0
+            {
+                return None;
+            }
+            let memory = (gst.gst_buffer_peek_memory)(buffer, memory_index);
+            if memory.is_null() || (dmabuf.allocators.gst_is_dmabuf_memory)(memory) == 0 {
+                return None;
+            }
+            let fd = (dmabuf.allocators.gst_dmabuf_memory_get_fd)(memory);
+            if fd < 0 {
+                return None;
+            }
+            let fd = BorrowedFd::borrow_raw(fd).try_clone_to_owned().ok()?;
+            Some(gpui::DmabufPlane {
+                fd,
+                offset: u32::try_from((*memory).offset + skip).ok()?,
+                stride: u32::try_from((*meta).stride[index]).ok()?,
+            })
+        };
+        let (luma, chroma) = (plane(0)?, plane(1)?);
+        let pts = (*buffer).pts;
+        (gst.gst_mini_object_ref)(sample);
+        let owner = SampleRef { api, sample };
+        let frame = gpui::VideoFrame::nv12_dmabuf(
+            width,
+            height,
+            video_colour(colorimetry, height),
+            luma,
+            chroma,
+            modifier,
+            owner,
+        )
+        .ok()?;
+        Some(Frame {
+            pts: (pts != ffi::GST_CLOCK_TIME_NONE).then(|| Duration::from_nanos(pts)),
+            picture: Picture::Video(Arc::new(frame)),
+        })
+    }
+}
+
+#[cfg(all(feature = "karya-gpui", target_os = "linux"))]
+fn log_once(message: &str) {
+    static LOGGED: std::sync::Once = std::sync::Once::new();
+    LOGGED.call_once(|| eprintln!("gpui-av-gstreamer: {message}"));
 }
 
 /// The YUV matrix and range GPUI converts with: the stream's, or what
