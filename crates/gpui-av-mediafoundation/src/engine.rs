@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::{Rc, Weak};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{App, Corners, RenderImage, Window, size};
 use gpui_av::{
@@ -25,8 +25,9 @@ use windows::Win32::Media::MediaFoundation::{
     MF_MEDIA_ENGINE_EVENT_CANPLAY, MF_MEDIA_ENGINE_EVENT_DURATIONCHANGE,
     MF_MEDIA_ENGINE_EVENT_ENDED, MF_MEDIA_ENGINE_EVENT_ERROR, MF_MEDIA_ENGINE_EVENT_FORMATCHANGE,
     MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA, MF_MEDIA_ENGINE_EVENT_PAUSE,
-    MF_MEDIA_ENGINE_EVENT_PLAYING, MF_MEDIA_ENGINE_EVENT_SEEKED, MF_MEDIA_ENGINE_EVENT_WAITING,
-    MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT, MF_VERSION, MFCreateAttributes, MFSTARTUP_FULL, MFStartup,
+    MF_MEDIA_ENGINE_EVENT_PLAYING, MF_MEDIA_ENGINE_EVENT_SEEKED, MF_MEDIA_ENGINE_EVENT_TIMEUPDATE,
+    MF_MEDIA_ENGINE_EVENT_WAITING, MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT, MF_VERSION,
+    MFCreateAttributes, MFSTARTUP_FULL, MFStartup,
 };
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::core::{BSTR, HRESULT, Interface, implement};
@@ -157,6 +158,44 @@ struct Inner {
     shown: Option<Arc<RenderImage>>,
     retired: Vec<Arc<RenderImage>>,
     presented: u64,
+    /// The frames drawn since the last seek, for telling a stalled
+    /// picture from a slow one.
+    run: FrameRun,
+    /// When the window last asked for a frame: a player off screen draws
+    /// none, and that is no stall.
+    last_paint: Option<Instant>,
+}
+
+/// The presentation times of the first and last frame of a run of frames,
+/// in seconds, and how many there were.
+#[derive(Clone, Copy, Debug, Default)]
+struct FrameRun {
+    first: f64,
+    last: f64,
+    count: u32,
+}
+
+impl FrameRun {
+    fn push(&mut self, at: f64) {
+        if self.count == 0 {
+            self.first = at;
+        }
+        self.last = at;
+        self.count += 1;
+    }
+
+    /// Whether the picture has stopped while the clock reached `position`.
+    /// It counts only once a run is long enough to know the frame rate,
+    /// and a gap is a stall only when it is many frames long and over
+    /// [`STALL_SECONDS`], so a slideshow or a single cover image is never
+    /// one.
+    fn stalled_at(&self, position: f64) -> bool {
+        if self.count < 10 {
+            return false;
+        }
+        let interval = (self.last - self.first) / f64::from(self.count - 1);
+        position - self.last > (interval * 10.0).max(STALL_SECONDS)
+    }
 }
 
 impl MfSession {
@@ -195,6 +234,8 @@ impl MfSession {
             shown: None,
             retired: Vec::new(),
             presented: 0,
+            run: FrameRun::default(),
+            last_paint: None,
         }));
         inner.borrow().sink.state(PlaybackState::Loading);
         let weak: Weak<RefCell<Inner>> = Rc::downgrade(&inner);
@@ -223,6 +264,14 @@ impl Inner {
             return;
         }
         let kind = event.event as i32;
+        if trace() {
+            // SAFETY: a plain engine query on the main thread.
+            let position = unsafe { self.engine.GetCurrentTime() };
+            eprintln!(
+                "mediafoundation: event {kind} ({}, {:#x}) at {position:.3} s",
+                event.param1, event.param2
+            );
+        }
         if kind == MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA.0 {
             self.loaded = true;
             self.report_info();
@@ -250,9 +299,55 @@ impl Inner {
             if !ended {
                 self.sink.state(PlaybackState::Paused);
             }
+        } else if kind == MF_MEDIA_ENGINE_EVENT_TIMEUPDATE.0 {
+            // A file cut off inside its media data can also leave the
+            // engine playing nothing with its clock running on past the
+            // stated length, with no end and no error (seen on Windows
+            // Server 2025).
+            // SAFETY: plain engine queries on the main thread.
+            let (position, length) =
+                unsafe { (self.engine.GetCurrentTime(), self.engine.GetDuration()) };
+            let painting = self
+                .last_paint
+                .is_some_and(|painted| painted.elapsed() < Duration::from_millis(500));
+            if painting && self.run.stalled_at(position) {
+                self.failed = true;
+                self.sink.fail(Error::new(
+                    ErrorKind::Decode,
+                    format!(
+                        "the picture stopped at {:.1} s while the clock ran on; the file is cut off or damaged",
+                        self.run.last
+                    ),
+                ));
+            } else if length.is_finite() && position - length > EARLY_END_SECONDS {
+                self.failed = true;
+                self.sink.fail(Error::new(
+                    ErrorKind::Decode,
+                    format!(
+                        "the media ran out before its stated length of {length:.1} s; the file is cut off or damaged"
+                    ),
+                ));
+            }
         } else if kind == MF_MEDIA_ENGINE_EVENT_ENDED.0 {
-            self.sink.state(PlaybackState::Ended);
+            // A file cut off inside its media data ends where the data
+            // stops, with no error; its header still states the full
+            // length. Ending well short of it is a broken file, not an end.
+            // SAFETY: plain engine queries on the main thread.
+            let (position, length) =
+                unsafe { (self.engine.GetCurrentTime(), self.engine.GetDuration()) };
+            if length.is_finite() && length - position > EARLY_END_SECONDS {
+                self.failed = true;
+                self.sink.fail(Error::new(
+                    ErrorKind::Decode,
+                    format!(
+                        "the media stopped at {position:.1} s, before its stated length of {length:.1} s"
+                    ),
+                ));
+            } else {
+                self.sink.state(PlaybackState::Ended);
+            }
         } else if kind == MF_MEDIA_ENGINE_EVENT_SEEKED.0 {
+            self.run = FrameRun::default();
             // SAFETY: as above.
             let position = seconds(unsafe { self.engine.GetCurrentTime() }).unwrap_or_default();
             self.sink.seeked(position);
@@ -292,6 +387,7 @@ impl Inner {
             self.pending_seek = Some(position);
             return;
         }
+        self.run = FrameRun::default();
         // SAFETY: a plain engine command on the main thread.
         if let Err(error) = unsafe { self.engine.SetCurrentTime(position.as_secs_f64()) } {
             log(&format!("seek failed: {error}"));
@@ -320,6 +416,8 @@ impl Inner {
                     self.retired.push(old);
                 }
                 self.presented += 1;
+                // OnVideoStreamTick gives the time in 100 ns units.
+                self.run.push(pts as f64 / 10_000_000.0);
             }
             Ok(None) => {}
             Err(error) => log(&format!("could not copy a frame: {error}")),
@@ -398,6 +496,21 @@ impl Inner {
 }
 
 /// Maps the engine's error code, and the HRESULT behind it, to a kind.
+/// How far short of its stated length a file may end before it counts as
+/// cut off. Stated lengths and the last frame disagree by a frame or two.
+const EARLY_END_SECONDS: f64 = 1.0;
+
+/// The shortest gap in the picture, while the clock runs and the window
+/// draws, that counts as the media having run out.
+const STALL_SECONDS: f64 = 4.0;
+
+/// Whether to print each engine event, for finding out what the engine does
+/// with a file (`GPUI_AV_MEDIAFOUNDATION_TRACE=1`).
+fn trace() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var_os("GPUI_AV_MEDIAFOUNDATION_TRACE").is_some())
+}
+
 fn error(code: usize, hresult: HRESULT) -> Error {
     const FILE_NOT_FOUND: u32 = 0x8007_0002;
     const PATH_NOT_FOUND: u32 = 0x8007_0003;
@@ -518,6 +631,7 @@ impl Session for MfSession {
         if inner.failed {
             return;
         }
+        inner.last_paint = Some(Instant::now());
         inner.take_frame();
         for image in inner.retired.drain(..) {
             // Frees the old frame's texture in GPUI's atlas.
@@ -547,5 +661,33 @@ impl Drop for MfSession {
         if let Err(error) = unsafe { self.inner.borrow().engine.Shutdown() } {
             log(&format!("shutdown failed: {error}"));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FrameRun;
+
+    fn run(rate: f64, count: u32) -> FrameRun {
+        let mut run = FrameRun::default();
+        for frame in 0..count {
+            run.push(f64::from(frame) / rate);
+        }
+        run
+    }
+
+    #[test]
+    fn a_picture_that_stops_while_the_clock_runs_is_a_stall() {
+        let video = run(30.0, 90);
+        assert!(!video.stalled_at(3.5));
+        assert!(video.stalled_at(8.0));
+    }
+
+    #[test]
+    fn slow_pictures_and_cover_images_are_not_stalls() {
+        assert!(!run(30.0, 1).stalled_at(60.0));
+        // A slideshow, a picture every 5 s.
+        assert!(!run(0.2, 12).stalled_at(55.0 + 30.0));
+        assert!(run(0.2, 12).stalled_at(55.0 + 60.0));
     }
 }
