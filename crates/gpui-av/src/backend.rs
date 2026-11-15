@@ -9,6 +9,7 @@
 //! this module alone.
 
 use std::any::Any;
+use std::ops::Range;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -77,6 +78,14 @@ pub trait Session: 'static {
     /// The current position on the session's clock (the audio clock, where
     /// there is one).
     fn position(&self) -> Duration;
+
+    /// The stretches of the media that can play without waiting for more
+    /// data, in order and not overlapping. A local file is buffered from
+    /// start to end once its length is known. The default, empty, means
+    /// the session cannot tell.
+    fn buffered(&self) -> Vec<Range<Duration>> {
+        Vec::new()
+    }
 
     /// Counters for how well the picture keeps up. The default reports
     /// nothing, for a session that cannot tell.

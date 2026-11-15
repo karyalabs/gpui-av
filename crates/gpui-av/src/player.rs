@@ -1,4 +1,5 @@
 use std::any::Any;
+use std::ops::Range;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -246,6 +247,15 @@ impl VideoPlayer {
         self.session
             .as_ref()
             .map_or(Duration::ZERO, |session| session.position())
+    }
+
+    /// The stretches of the media that can play without waiting for more
+    /// data, for a timeline to show. Empty while loading, after a failure,
+    /// and when the backend cannot tell.
+    pub fn buffered(&self) -> Vec<Range<Duration>> {
+        self.session
+            .as_ref()
+            .map_or_else(Vec::new, |session| session.buffered())
     }
 
     /// How well the picture keeps up: frames presented and dropped, as the

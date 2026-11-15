@@ -20,6 +20,9 @@ pub type GstFlowReturn = c_int;
 pub const GST_CLOCK_TIME_NONE: GstClockTime = u64::MAX;
 pub const GST_FLOW_OK: GstFlowReturn = 0;
 pub const GST_FORMAT_TIME: c_int = 3;
+pub const GST_FORMAT_PERCENT: c_int = 5;
+/// What 100% is in `GST_FORMAT_PERCENT` values.
+pub const GST_FORMAT_PERCENT_MAX: i64 = 1_000_000;
 pub const GST_MAP_READ: c_int = 1;
 
 pub const GST_STATE_NULL: c_int = 1;
@@ -216,6 +219,11 @@ library!(Gst {
     gst_element_query_position: unsafe extern "C" fn(*mut c_void, c_int, *mut i64) -> gboolean,
     gst_element_query_duration: unsafe extern "C" fn(*mut c_void, c_int, *mut i64) -> gboolean,
     gst_element_seek_simple: unsafe extern "C" fn(*mut c_void, c_int, c_int, i64) -> gboolean,
+    gst_element_query: unsafe extern "C" fn(*mut c_void, *mut c_void) -> gboolean,
+    gst_query_new_buffering: unsafe extern "C" fn(c_int) -> *mut c_void,
+    gst_query_parse_buffering_range: unsafe extern "C" fn(*mut c_void, *mut c_int, *mut i64, *mut i64, *mut i64),
+    gst_query_get_n_buffering_ranges: unsafe extern "C" fn(*mut c_void) -> c_uint,
+    gst_query_parse_nth_buffering_range: unsafe extern "C" fn(*mut c_void, c_uint, *mut i64, *mut i64) -> gboolean,
     gst_bus_pop: unsafe extern "C" fn(*mut c_void) -> *mut GstMessage,
     gst_message_parse_error: unsafe extern "C" fn(*mut GstMessage, *mut *mut GError, *mut *mut c_char),
     gst_message_parse_state_changed: unsafe extern "C" fn(*mut GstMessage, *mut c_int, *mut c_int, *mut c_int),

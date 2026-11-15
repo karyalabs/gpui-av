@@ -2,6 +2,7 @@
 
 use std::any::Any;
 use std::cell::RefCell;
+use std::ops::Range;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
@@ -329,6 +330,10 @@ impl Session for FallbackSession {
 
     fn position(&self) -> Duration {
         self.with(|session| session.position()).unwrap_or_default()
+    }
+
+    fn buffered(&self) -> Vec<Range<Duration>> {
+        self.with(|session| session.buffered()).unwrap_or_default()
     }
 
     fn stats(&self) -> Stats {

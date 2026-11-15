@@ -52,6 +52,7 @@ web-sys = { workspace = true, features = [
     "ServiceWorker",
     "ServiceWorkerContainer",
     "ServiceWorkerRegistration",
+    "TimeRanges",
     "Url",
     "VideoPlaybackQuality",
     "Window",

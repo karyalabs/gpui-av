@@ -327,6 +327,7 @@ impl LabView {
                     or_dash(info.duration.map(clock))
                 ),
             ),
+            ("buffered", buffered_label(&player.buffered())),
             (
                 "size",
                 or_dash(
@@ -745,6 +746,18 @@ fn state_label(state: &PlaybackState) -> String {
 }
 
 /// A position as minutes, seconds and tenths: `1:07.3`.
+/// The buffered ranges as `0:00-0:12, 0:30-0:41`, or `-` when unknown.
+fn buffered_label(ranges: &[std::ops::Range<Duration>]) -> String {
+    if ranges.is_empty() {
+        return "-".to_string();
+    }
+    ranges
+        .iter()
+        .map(|range| format!("{}-{}", clock(range.start), clock(range.end)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn clock(time: Duration) -> String {
     let tenths = time.as_millis() / 100;
     format!("{}:{:02}.{}", tenths / 600, tenths / 10 % 60, tenths % 10)

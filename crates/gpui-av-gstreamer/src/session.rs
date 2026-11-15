@@ -453,6 +453,14 @@ impl Session for GstSession {
         inner.pipeline.position().unwrap_or_default()
     }
 
+    fn buffered(&self) -> Vec<std::ops::Range<Duration>> {
+        let inner = self.inner.borrow();
+        if !inner.loaded {
+            return Vec::new();
+        }
+        inner.pipeline.buffered()
+    }
+
     fn stats(&self) -> Stats {
         let inner = self.inner.borrow();
         let stats = Stats::new(inner.presented, inner.replaced + inner.sink_dropped);
