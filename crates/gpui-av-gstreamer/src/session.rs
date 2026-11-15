@@ -530,7 +530,9 @@ impl Drop for GstSession {
             per_frame(copy, copies),
             inner.uploads,
             per_frame(inner.upload, inner.uploads),
-            if cfg!(feature = "karya-gpui") {
+            if cfg!(feature = "karya-gpui") && std::env::var_os("GPUI_AV_DMABUF").is_some() {
+                "paint_video_frame (dmabuf, no copy)"
+            } else if cfg!(feature = "karya-gpui") {
                 "paint_video_frame (NV12, no copy)"
             } else {
                 "paint_image"

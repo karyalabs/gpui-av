@@ -195,6 +195,39 @@ check), `baseline.sh` (tier A, heavier clips, `measure.py`, soak),
 found", for six hours on 2026-11-13); failed builds are not billed and
 `--wait-capacity` keeps trying.
 
+## Dmabufs on a real GPU: OVH L4 (2026-11-15)
+
+E5 step 2 is written: our GPUI imports each NV12 plane of a dmabuf into
+wgpu (`VideoFrame::nv12_dmabuf`, karyalabs/zed#8), and the backend asks the
+appsink for `video/x-raw(memory:DMABuf),format=DMA_DRM` when
+`GPUI_AV_DMABUF=1` and hands the planes over without a copy. NVDEC's own
+GStreamer decoders give CUDA memory, so the dmabufs have to come from
+GStreamer's VA decoders, which on NVIDIA go through nvidia-vaapi-driver.
+
+It could not be measured on OVH. A10s were sold out in GRA11 for 3.5
+hours, so the run used an NVIDIA L4 (`l4-90`, the same price; GRA11's
+quota now fits it). On OVH's Ubuntu 24.04 NVIDIA image, with driver 580:
+
+- Ubuntu's nvidia-vaapi-driver is 0.0.8 (2022). Its direct backend cannot
+  open the 580 driver (`nv_alloc_object NV01_ROOT_CLIENT failed`). Its EGL
+  backend passes `vainfo` (H.264, HEVC 8/10/12-bit, VP9, AV1).
+- GStreamer only uses VA drivers on its allowlist (Intel, Mesa) unless
+  `GST_VA_ALL_DRIVERS=1`. With it, `vah264dec` registers, but it offers
+  only system memory (no DMABuf or VAMemory caps) and every stream fails
+  at `vaCreateContext: resource allocation failed`. So no VA decoder gave
+  a single frame, dmabuf or not (`ovh/vaprobe.sh`, `vaprobe2.sh`,
+  `vadebug.sh`).
+- Building a current nvidia-vaapi-driver on the box was not tried in this
+  run.
+
+So the dmabuf path is unproven on real hardware. The import side is the
+same Vulkan call for any vendor; what is missing is a decoder that hands
+out dmabufs. Intel and AMD (Mesa's VA drivers, on GStreamer's allowlist)
+are the main target and OVH has neither. A Linux desktop with an Intel or
+AMD GPU is the next place to run `ovh/dmabench.sh`, unchanged apart from
+the VA environment variables at its top. Cost of this run: ₹83 (one L4
+hour); ₹413 in all.
+
 ## A Linux VM on a Mac (2026-11-13)
 
 Tried as a stand-in for a Linux desktop with a GPU: Lima 2.2.1 with
@@ -231,9 +264,10 @@ Venus device at all).
   `karya-gpui`: it halves to quarters the CPU and plays 4K 10-bit with
   NVDEC where the image path drops a third of the frames. The image path
   stays as the fallback on stock gpui-pre.
-- E5 step 2: take NVDEC and VA-API frames as dmabufs and import them with
-  wgpu's `texture_from_dmabuf_fd`, removing the copy out of video memory
-  and the upload back. Then P010 for 10-bit.
+- E5 step 2 (dmabuf import, written, karyalabs/zed#8): measure it with
+  VA-API on an Intel or AMD desktop; on NVIDIA it needs a newer
+  nvidia-vaapi-driver than Ubuntu 24.04 ships, or a CUDA to dmabuf export
+  for NVDEC's own decoders. Then P010 for 10-bit.
 - Ask apps (and our own player element) to turn GPUI's inactive-window
   throttle off while video plays, and stop asking for a frame every tick
   while waiting for the next video frame (pace to the video's rate).
