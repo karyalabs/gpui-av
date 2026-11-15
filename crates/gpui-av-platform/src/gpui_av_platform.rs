@@ -14,7 +14,8 @@
 //! | Target | Backends, in order |
 //! |---|---|
 //! | macOS | AVFoundation, then GStreamer where it is installed (for MKV, WebM and other media AVFoundation will not open) |
-//! | Linux, Windows and other desktops | GStreamer |
+//! | Windows | Media Foundation, then GStreamer where it is installed |
+//! | Linux and other desktops | GStreamer |
 //! | wasm32 | the browser's `<video>` element, without request headers (see below) |
 //!
 //! Each backend is a cargo feature, on by default; turn one off to leave
@@ -42,6 +43,10 @@ pub fn backends() -> Vec<Rc<dyn Backend>> {
     let mut backends: Vec<Rc<dyn Backend>> = Vec::new();
     #[cfg(all(feature = "avfoundation", target_os = "macos"))]
     backends.push(Rc::new(gpui_av_avfoundation::AvFoundationBackend::new()));
+    #[cfg(all(feature = "mediafoundation", windows))]
+    backends.push(Rc::new(
+        gpui_av_mediafoundation::MediaFoundationBackend::new(),
+    ));
     #[cfg(all(feature = "gstreamer", not(target_family = "wasm")))]
     backends.push(Rc::new(gpui_av_gstreamer::GStreamerBackend::new()));
     #[cfg(all(feature = "web", target_family = "wasm"))]
@@ -69,7 +74,9 @@ mod tests {
             .collect();
         #[cfg(target_os = "macos")]
         assert_eq!(names, ["avfoundation", "gstreamer"]);
-        #[cfg(not(any(target_os = "macos", target_family = "wasm")))]
+        #[cfg(windows)]
+        assert_eq!(names, ["mediafoundation", "gstreamer"]);
+        #[cfg(not(any(target_os = "macos", windows, target_family = "wasm")))]
         assert_eq!(names, ["gstreamer"]);
     }
 }

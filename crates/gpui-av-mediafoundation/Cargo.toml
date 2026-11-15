@@ -1,0 +1,39 @@
+[package]
+name = "gpui-av-mediafoundation"
+description = "The Windows backend for gpui-av: Media Foundation's media engine, drawn as GPUI images."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/gpui_av_mediafoundation.rs"
+
+# Everything is Windows only: on other targets this is an empty library.
+[target.'cfg(windows)'.dependencies]
+gpui-av.workspace = true
+gpui.workspace = true
+async-channel.workspace = true
+image.workspace = true
+smallvec.workspace = true
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Imaging",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+] }
+windows-core = "0.62"
+
+[target.'cfg(windows)'.dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+gpui-platform.workspace = true
+
+[[test]]
+name = "engine"
+harness = false

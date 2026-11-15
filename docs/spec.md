@@ -215,6 +215,7 @@ crates/gpui-av                the API; depends on the GPUI core crate only
 crates/gpui-av-avfoundation   macOS backend (E1), depends on gpui-av
 crates/gpui-av-web            web backend (E3), depends on gpui-av
 crates/gpui-av-gstreamer      Linux backend (E2), depends on gpui-av
+crates/gpui-av-mediafoundation Windows backend (S6), depends on gpui-av
 crates/gpui-av-platform       the platform's backends in one call (S2)
 lab/                          gpui-av-lab (L0), with its test-pattern backend
 ```
@@ -226,7 +227,8 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   in `Failed`. `gpui-av-platform` is the facade that picks for the app:
   `gpui_av_platform::init(cx)` sets a `Fallback` over
   `gpui_av_platform::backends()`, which on macOS is AVFoundation then
-  GStreamer, on Linux, Windows and other desktops GStreamer, and in a
+  GStreamer, on Windows Media Foundation then GStreamer, on Linux and
+  other desktops GStreamer, and in a
   browser the `<video>` backend without the service worker (an app that
   needs request headers there sets `WebBackend::with_service_worker`
   itself). Each backend is a cargo feature, on by default. On macOS
@@ -392,6 +394,22 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   not state it. Formats are whatever plugins the machine has: with the
   usual distribution packages that includes VP9, AV1, MKV and WebM, and
   FFV1 through gst-libav.
+- **Windows (S6).** `gpui-av-mediafoundation` plays with Media
+  Foundation's media engine (`IMFMediaEngine`, which also sits under the
+  browser's `<video>` on Windows) in frame-server mode: the engine
+  decodes (in hardware where it can), plays the sound and keeps the
+  clock; on each paint `OnVideoStreamTick` says whether a new frame is
+  due, and `TransferVideoFrame` copies it into a WIC bitmap in BGRA,
+  which becomes a GPUI image (the same image path as Linux before E5).
+  Engine events arrive on its own threads and go to the main thread
+  through a channel. Errors map from the engine's code and the HRESULT
+  behind it (file and HTTP statuses). Sources with request headers fail
+  as `Unsupported` for now, so a `Fallback` passes them on; sending them
+  needs our own `IMFByteStream`. Not reported yet: dropped frames,
+  colour, rotation. Zero-copy (a D3D11 texture shared with GPUI's
+  renderer) is the later step, as E5 is for Linux. Its tests run on a
+  Windows runner in GitHub Actions, only when this crate changes or by
+  hand (`.github/workflows/windows.yml`), never as part of `ci`.
 - **The lab on Linux.** The lab opens GPUI windows on X11 and Wayland and
   defaults to the GStreamer backend. In the cloud sandbox it runs under
   Xvfb with Mesa's llvmpipe, which draws about 21 window frames a second:
@@ -809,7 +827,7 @@ about 2026-11-24) runs beside it and blocks nothing here.
 | S3 | The public API made ready for others: docs on every item with runnable examples, a quick start in the README, `buffered`, and a check that the crates package for crates.io (publishing itself waits for Arya) | `buffered` done 2026-11-15 (macOS part compiled, not yet run on a Mac); `gpui-av` packages and builds alone on stock gpui-pre; docs and examples next |
 | S4 | Subtitles: sidecar WebVTT and SRT parsed in the API crate, cues by position, and an element that draws them over the picture on the native backends (on the web the `<video>` element's own text tracks, since GPUI cannot draw over the overlay) || Sidecar WebVTT and SRT with `captions()` done 2026-11-15 for backends that draw into the window (checked with GStreamer under Xvfb); web text tracks not built |
 | S5 | Audio and text tracks inside the media: list them and pick one, on each backend | |
-| S6 | Windows: a Media Foundation backend (`IMFMediaEngine`), drawn as GPUI images first, checked by a Windows run in GitHub Actions started by hand (CI stays one fast job) | |
+| S6 | Windows: a Media Foundation backend (`IMFMediaEngine`), drawn as GPUI images first, checked by a Windows run in GitHub Actions started by hand (CI stays one fast job) || Backend written 2026-11-15 (image path, no request headers); see the Windows run in its PR |
 | S7 | Wider media: E7 (MKV and WebM on macOS and the web), tier B in the corpus and the bench's coverage table per backend | |
 
 ## 6. Risks
