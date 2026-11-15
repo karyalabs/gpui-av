@@ -112,3 +112,64 @@ fn remuxer_for(clip: &std::path::Path) -> Remuxer<BufReader<fs::File>> {
 fn playlist_text(out: &std::path::Path) -> Vec<u8> {
     fs::read(out.join("index.m3u8")).expect("read the playlist")
 }
+
+/// The same clips read piece by piece through a [`SparseFile`], as a
+/// browser fetches them: the output must be the same bytes.
+#[test]
+#[ignore = "needs GPUI_AV_REMUX_CLIPS"]
+fn remuxes_clips_fetched_in_parts() {
+    use gpui_av_remux::SparseFile;
+
+    const CHUNK: u64 = 64 * 1024;
+    let Some(folder) = std::env::var_os("GPUI_AV_REMUX_CLIPS").map(PathBuf::from) else {
+        panic!("set GPUI_AV_REMUX_CLIPS to a folder of .mkv and .webm files");
+    };
+    let mut clips: Vec<PathBuf> = fs::read_dir(&folder)
+        .expect("read the folder")
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "mkv" || extension == "webm")
+        })
+        .collect();
+    clips.sort();
+    for clip in clips {
+        let whole = fs::read(&clip).expect("read the clip");
+        let length = whole.len() as u64;
+        let fetch = |file: &SparseFile, start: u64, end: u64| {
+            let end = end.min(length);
+            file.insert(start, whole[start as usize..end as usize].to_vec());
+        };
+        let file = SparseFile::new();
+        file.set_length(length);
+        let mut fetches = 0;
+        let mut remuxer = loop {
+            match Remuxer::open(file.reader()) {
+                Ok(remuxer) => break remuxer,
+                Err(error) => {
+                    let at = error
+                        .missing()
+                        .unwrap_or_else(|| panic!("{clip:?}: {error}"));
+                    fetch(&file, at, at + CHUNK);
+                    fetches += 1;
+                    assert!(fetches < 10_000, "{clip:?}: no progress");
+                }
+            }
+        };
+        let mut direct = remuxer_for(&clip);
+        assert_eq!(remuxer.init_segment(), direct.init_segment(), "{clip:?}");
+        for index in 0..remuxer.segments().len() {
+            let (start, end) = remuxer.segment_bytes(index).expect("a segment");
+            let end = end.unwrap_or(length);
+            fetch(&file, start, end);
+            let segment = remuxer.media_segment(index).expect("segment");
+            assert_eq!(
+                segment,
+                direct.media_segment(index).expect("direct"),
+                "{clip:?} {index}"
+            );
+            file.forget(start..end);
+        }
+        println!("{}: opened after {fetches} fetches", clip.display());
+    }
+}

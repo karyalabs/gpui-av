@@ -14,6 +14,7 @@ workspace = true
 [dependencies]
 gpui-av.workspace = true
 gpui.workspace = true
+gpui-av-remux.workspace = true
 
 # The backend itself is browser only: on other targets this crate holds the
 # service worker's source and the parts that can be tested without a page.
@@ -27,6 +28,7 @@ raw-window-handle = "0.6"
 web-sys = { workspace = true, features = [
     "AbortController",
     "AbortSignal",
+    "AddEventListenerOptions",
     "CssStyleDeclaration",
     "Document",
     "DomException",
@@ -41,6 +43,8 @@ web-sys = { workspace = true, features = [
     "HtmlVideoElement",
     "Location",
     "MediaError",
+    "MediaSource",
+    "MediaSourceReadyState",
     "MessageEvent",
     "MessagePort",
     "Navigator",
@@ -52,6 +56,7 @@ web-sys = { workspace = true, features = [
     "ServiceWorker",
     "ServiceWorkerContainer",
     "ServiceWorkerRegistration",
+    "SourceBuffer",
     "TimeRanges",
     "Url",
     "VideoPlaybackQuality",

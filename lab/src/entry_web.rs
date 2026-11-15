@@ -104,6 +104,8 @@ fn arguments() -> Vec<String> {
         let value = pair.get(1).as_string().unwrap_or_default();
         match key.as_str() {
             "clip" => arguments.push(absolute(&value)),
+            // Read by the backends, not the lab's options.
+            "remux-always" => {}
             "bench" | "base-url" => arguments.extend([format!("--{key}"), absolute(&value)]),
             _ if value.is_empty() => arguments.push(format!("--{key}")),
             _ => arguments.extend([format!("--{key}"), value]),

@@ -25,9 +25,11 @@ mod matroska;
 mod mp4;
 #[cfg(not(target_arch = "wasm32"))]
 mod serve;
+mod sparse;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use serve::HlsServer;
+pub use sparse::{SparseFile, SparseReader};
 
 use std::fmt;
 use std::io::{self, Read, Seek};
@@ -386,6 +388,15 @@ impl<R: Read + Seek> Remuxer<R> {
         playlist
     }
 
+    /// Where segment `index`'s clusters are in the file: from the first
+    /// byte to the last (exclusive), or to the end of the file for `None`.
+    /// A reader over a [`SparseFile`] needs these bytes fetched before
+    /// [`Remuxer::media_segment`].
+    pub fn segment_bytes(&self, index: usize) -> Option<(u64, Option<u64>)> {
+        let plan = self.plans.get(index)?;
+        Some((plan.position, plan.end_position.or(self.header.segment_end)))
+    }
+
     /// Media segment `index`: a `moof` and an `mdat` with every frame of
     /// its clusters.
     pub fn media_segment(&mut self, index: usize) -> Result<Vec<u8>, RemuxError> {
@@ -393,6 +404,9 @@ impl<R: Read + Seek> Remuxer<R> {
             .plans
             .get(index)
             .ok_or_else(|| RemuxError::invalid("no such segment"))?;
+        // A read that failed before (a sparse file's gap) leaves the
+        // reader's position unknown.
+        self.ebml.resync()?;
         let mut blocks: Vec<Vec<Block>> = vec![Vec::new(); self.outputs.len()];
         let outputs = &self.outputs;
         let codec_delays = &self.codec_delays;

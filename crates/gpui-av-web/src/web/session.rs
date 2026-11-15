@@ -11,6 +11,7 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 
+use super::mse;
 use super::probe::probe;
 use super::proxy::Proxy;
 use crate::errors;
@@ -56,6 +57,11 @@ struct Shared {
     events: EventSink,
     /// The URL the element loads: what a probe asks for after an error.
     url: String,
+    /// The media itself and its request headers, for fetching it to remux.
+    remote: mse::Remote,
+    remux: Cell<Remux>,
+    /// Feeds the element a Matroska or WebM file it would not open.
+    feeding: RefCell<Option<mse::Feeding>>,
     /// The app asked for playback and has not paused since.
     wanted: Cell<bool>,
     /// The element could start playing: `Ready` has been reported, or
@@ -78,6 +84,15 @@ struct Shared {
     css: RefCell<String>,
     /// What the element was last painted with, while it shows.
     painted: RefCell<Option<Painted>>,
+}
+
+/// Whether the media is played through Media Source Extensions.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Remux {
+    /// Not tried: the element plays the URL itself, or has not failed.
+    Untried,
+    /// Checking the file, or feeding it.
+    Tried,
 }
 
 /// What `paint` was last given. GPUI only paints when its own window
@@ -106,6 +121,7 @@ impl WebSession {
         url: &str,
         headers: &[(String, String)],
         proxy: Option<Rc<Proxy>>,
+        remux_always: bool,
         events: EventSink,
     ) -> Result<Self, JsValue> {
         let window = web_sys::window().ok_or("no window")?;
@@ -134,6 +150,12 @@ impl WebSession {
             video,
             events,
             url: load.clone(),
+            remote: mse::Remote {
+                url: url.href(),
+                headers: headers.to_vec(),
+            },
+            remux: Cell::new(Remux::Untried),
+            feeding: RefCell::new(None),
             wanted: Cell::new(false),
             ready: Cell::new(false),
             ended: Cell::new(false),
@@ -183,7 +205,11 @@ impl WebSession {
                 if isolated && url.origin() != window.location().origin()? {
                     shared.video.set_cross_origin(Some("anonymous"));
                 }
-                shared.video.set_src(&load);
+                if remux_always {
+                    shared.try_remux(None);
+                } else {
+                    shared.video.set_src(&load);
+                }
             }
         }
         Ok(Self {
@@ -395,12 +421,61 @@ impl Shared {
     }
 
     fn on_error(self: &Rc<Self>) {
-        // No more events after this one; the probe below takes a moment.
-        self.failed.set(true);
         let (code, detail) = self
             .video
             .error()
             .map_or((0, String::new()), |error| (error.code(), error.message()));
+        if code == errors::MEDIA_ERR_SRC_NOT_SUPPORTED && self.remux.get() == Remux::Untried {
+            // Perhaps Matroska or WebM, which this browser can still play
+            // through Media Source Extensions.
+            self.try_remux(Some((code, detail)));
+            return;
+        }
+        self.report_error(code, detail);
+    }
+
+    /// Fetches the start of the media and, if it is Matroska or WebM, feeds
+    /// it to the element through Media Source Extensions. Otherwise the
+    /// element's own error (`after`) stands, or, with none yet, the element
+    /// loads the URL itself.
+    fn try_remux(self: &Rc<Self>, after: Option<(u16, String)>) {
+        self.remux.set(Remux::Tried);
+        let shared = self.clone();
+        let weak = Rc::downgrade(self);
+        spawn_local(async move {
+            let fail = move |error: Error| {
+                if let Some(shared) = weak.upgrade()
+                    && !shared.closed.get()
+                    && !shared.failed.get()
+                {
+                    shared.fail(error);
+                }
+            };
+            let outcome = mse::start(shared.video.clone(), shared.remote.clone(), fail).await;
+            if shared.closed.get() {
+                return;
+            }
+            match (outcome, after) {
+                (Ok(mse::Outcome::Playing(feeding)), _) => {
+                    *shared.feeding.borrow_mut() = Some(feeding);
+                }
+                (Ok(mse::Outcome::NotMatroska), Some((code, detail))) => {
+                    shared.report_error(code, detail);
+                }
+                (Ok(mse::Outcome::NotMatroska), None) => shared.video.set_src(&shared.url),
+                // An answer the page may not read (CORS) says nothing
+                // about the media: the element may still play it.
+                (Err(error), None) if error.kind() == ErrorKind::Network => {
+                    shared.video.set_src(&shared.url);
+                }
+                (Err(error), _) => shared.fail(error),
+            }
+        });
+    }
+
+    fn report_error(self: &Rc<Self>, code: u16, detail: String) {
+        // No more events after this one; the probe below takes a moment.
+        self.failed.set(true);
         let shared = self.clone();
         spawn_local(async move {
             let probe = probe(&shared.url).await;
@@ -566,6 +641,7 @@ impl Drop for WebSession {
     fn drop(&mut self) {
         let video = &self.shared.video;
         self.shared.closed.set(true);
+        self.shared.feeding.borrow_mut().take();
         for (name, listener) in &self.listeners {
             let _ =
                 video.remove_event_listener_with_callback(name, listener.as_ref().unchecked_ref());

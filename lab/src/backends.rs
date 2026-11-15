@@ -27,10 +27,23 @@ fn own() -> Vec<Rc<dyn Backend>> {
 }
 
 // The worker sends the request headers a `<video>` element cannot;
-// scripts/web puts its file next to the page.
+// scripts/web puts its file next to the page. `?remux-always` in the page's
+// URL plays every Matroska and WebM file through Media Source Extensions,
+// to test that path in a browser that opens them itself.
 #[cfg(target_family = "wasm")]
 fn own() -> Vec<Rc<dyn Backend>> {
-    vec![Rc::new(gpui_av_web::WebBackend::with_service_worker(
-        "gpui-av-sw.js",
-    ))]
+    let backend = gpui_av_web::WebBackend::with_service_worker("gpui-av-sw.js");
+    let remux_always = web_sys::window()
+        .and_then(|window| window.location().search().ok())
+        .is_some_and(|search| {
+            search
+                .trim_start_matches('?')
+                .split('&')
+                .any(|pair| pair.split('=').next() == Some("remux-always"))
+        });
+    vec![Rc::new(if remux_always {
+        backend.remux_matroska_always()
+    } else {
+        backend
+    })]
 }

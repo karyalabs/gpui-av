@@ -62,9 +62,9 @@ ${GPUI_AV_WEB_RUSTFLAGS:-}"
     mkdir -p "$dist"
     wasm-bindgen --target web --no-typescript --out-dir "$dist" "$out/gpui-av-lab.wasm"
     cp lab/web/index.html "$dist/"
-    # The service worker that sends request headers, and the bench manifest.
+    # The service worker that sends request headers, and the bench manifests.
     cp crates/gpui-av-web/assets/gpui-av-sw.js "$dist/"
-    cp corpus/tier-a.json "$dist/"
+    cp corpus/tier-a.json corpus/tier-b.json "$dist/"
     ls -lh "$dist"
 }
 

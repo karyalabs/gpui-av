@@ -93,6 +93,51 @@ takes H.264, HEVC, AAC, FLAC and Opus in fMP4, but not VP9), and Chrome,
 Firefox and Safari through MSE. VP9 on macOS stays a gap after this: neither
 the HLS path nor AVFoundation's own files take it.
 
+### Step 3: the web, through Media Source Extensions
+
+`gpui-av-web` fetches the file in parts with range requests into a
+`SparseFile` (the remuxer reads it; a read of bytes not fetched yet fails
+and says where, and the backend fetches them and tries again, doubling the
+chunk from 64 KB), then feeds the init segment and each media segment to a
+`SourceBuffer` on the same `<video>` element: about 30 s ahead of the
+playhead, dropping what is more than 20 s behind, starting again from the
+playhead's segment after a seek. It only does this when the element itself
+refuses the file (`MEDIA_ERR_SRC_NOT_SUPPORTED`) and its first bytes are
+EBML, or always with `WebBackend::remux_matroska_always` (the lab's
+`?remux-always`). A codec string `MediaSource.isTypeSupported` refuses
+fails as `Unsupported`, so a `Fallback` can move on.
+
+Headless Chromium 153 on Linux (this container, software decoding),
+`scripts/web build` release, `scripts/serve.py`, muted:
+
+| Clips | `<video>` itself | Through MSE (`?remux-always`) |
+|---|---|---|
+| Tier B, 19 clips | 15 pass | 15 pass, the same 15 |
+| Tier A, 16 clips | 15 pass | 15 pass (MSE not used: no Matroska) |
+| 30 s H.264 B-frames, H.264 without Cues, VP9 and a 10-minute H.264, all Matroska or WebM | 4 pass | 4 pass |
+
+- On the five tier B Matroska and WebM clips, MSE plays the same frames
+  (134 to 138 of 150 in the bench's 4.5 s) with 0 or 1 dropped.
+- Time to first frame through MSE is 70 to 145 ms against 20 to 150 ms
+  natively: the sniff and the header fetch come first.
+- Seeks to the middle took 24 to 37 ms on the 30 s clips and 156 ms on
+  the 10-minute one (the segment is fetched and remuxed on demand) against
+  38 to 72 ms natively.
+- HEVC in Matroska: Chromium's `<video>` "plays" it with no picture and
+  reports sound only; through MSE it fails as `Unsupported` ("cannot play
+  hvc1... from this matroska file"), which lets a fallback take it. The
+  other tier B failures are HEVC in MP4, which Chromium has no decoder for
+  (Chrome on a Mac does, E3).
+- Two things found running it: a `SourceBuffer` refuses a view of the
+  page's memory, which GPUI shares with its workers, so each segment is
+  copied out first; and Matroska muxers put the sound just before a
+  keyframe into the next cluster, so a segment's buffered range stops a
+  little short of its end and the feeder must move on to the next segment
+  rather than append the same one again.
+
+Not run: Safari and Firefox, where this path matters most (neither opens
+Matroska), with the Mac check.
+
 ## Next
 
 - macOS: done in code (`HlsServer`, and the AVFoundation backend opens
@@ -101,6 +146,5 @@ the HLS path nor AVFoundation's own files take it.
   tier B on AVFoundation, and whether HLS takes Opus and refuses VP9
   cleanly so the fallback moves on. Matroska over HTTP needs a reader with
   range requests, later.
-- Web: an MSE path in gpui-av-web for files the `<video>` element will not
-  open, with the same segments.
+- Web: done (step 3). Safari and Firefox runs with the Mac check.
 - Spec: E7's answer is folded into section 5 and S7.
