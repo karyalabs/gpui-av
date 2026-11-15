@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use gpui::{App, Corners, RenderImage, Window, size};
 use gpui_av::{
     Backend, Error, ErrorKind, EventSink, Location, MediaInfo, Placement, PlaybackState, Session,
-    Source, Stats,
+    Source, Stats, Track, TrackKind,
 };
 use image::{Frame as ImageFrame, RgbaImage};
 use smallvec::SmallVec;
@@ -19,17 +19,20 @@ use windows::Win32::Graphics::Imaging::{
 };
 use windows::Win32::Media::MediaFoundation::{
     CLSID_MFMediaEngineClassFactory, IMFAttributes, IMFMediaEngine, IMFMediaEngineClassFactory,
-    IMFMediaEngineNotify, IMFMediaEngineNotify_Impl, MF_MEDIA_ENGINE_CALLBACK,
+    IMFMediaEngineEx, IMFMediaEngineNotify, IMFMediaEngineNotify_Impl, MF_MEDIA_ENGINE_CALLBACK,
     MF_MEDIA_ENGINE_ERR_ABORTED, MF_MEDIA_ENGINE_ERR_DECODE, MF_MEDIA_ENGINE_ERR_ENCRYPTED,
     MF_MEDIA_ENGINE_ERR_NETWORK, MF_MEDIA_ENGINE_ERR_SRC_NOT_SUPPORTED,
     MF_MEDIA_ENGINE_EVENT_CANPLAY, MF_MEDIA_ENGINE_EVENT_DURATIONCHANGE,
     MF_MEDIA_ENGINE_EVENT_ENDED, MF_MEDIA_ENGINE_EVENT_ERROR, MF_MEDIA_ENGINE_EVENT_FORMATCHANGE,
     MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA, MF_MEDIA_ENGINE_EVENT_PAUSE,
     MF_MEDIA_ENGINE_EVENT_PLAYING, MF_MEDIA_ENGINE_EVENT_SEEKED, MF_MEDIA_ENGINE_EVENT_TIMEUPDATE,
-    MF_MEDIA_ENGINE_EVENT_WAITING, MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT, MF_VERSION,
-    MFCreateAttributes, MFSTARTUP_FULL, MFStartup,
+    MF_MEDIA_ENGINE_EVENT_WAITING, MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT, MF_MT_MAJOR_TYPE,
+    MF_SD_LANGUAGE, MF_SD_STREAM_NAME, MF_VERSION, MFCreateAttributes, MFMediaType_Audio,
+    MFSTARTUP_FULL, MFStartup,
 };
+use windows::Win32::System::Com::StructuredStorage::{PROPVARIANT, PropVariantClear};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
+use windows::Win32::System::Variant::{VT_CLSID, VT_LPWSTR};
 use windows::core::{BSTR, HRESULT, Interface, implement};
 
 /// Plays media with Media Foundation's media engine and draws it as GPUI
@@ -164,6 +167,13 @@ struct Inner {
     /// When the window last asked for a frame: a player off screen draws
     /// none, and that is no stall.
     last_paint: Option<Instant>,
+    /// The engine's stream selection, where the system has it.
+    streams: Option<IMFMediaEngineEx>,
+    /// The audio streams, by their index among all streams, with their
+    /// labels, read when the metadata loads.
+    audio: Vec<(u32, Track)>,
+    /// An audio choice made before the metadata loaded.
+    pending_audio: Option<usize>,
 }
 
 /// The presentation times of the first and last frame of a run of frames,
@@ -223,6 +233,9 @@ impl MfSession {
             engine.SetSource(&BSTR::from(url))?;
             (engine, wic)
         };
+        // Windows 8 and later have the extended engine, with stream
+        // selection.
+        let streams = engine.cast::<IMFMediaEngineEx>().ok();
         let inner = Rc::new(RefCell::new(Inner {
             engine,
             sink,
@@ -236,6 +249,9 @@ impl MfSession {
             presented: 0,
             run: FrameRun::default(),
             last_paint: None,
+            streams,
+            audio: Vec::new(),
+            pending_audio: None,
         }));
         inner.borrow().sink.state(PlaybackState::Loading);
         let weak: Weak<RefCell<Inner>> = Rc::downgrade(&inner);
@@ -274,6 +290,10 @@ impl Inner {
         }
         if kind == MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA.0 {
             self.loaded = true;
+            self.read_streams();
+            if let Some(index) = self.pending_audio.take() {
+                self.select_audio(index);
+            }
             self.report_info();
             if let Some(position) = self.pending_seek.take() {
                 self.seek(position);
@@ -376,10 +396,68 @@ impl Inner {
                 natural_size,
                 has_video,
                 has_audio: Some(self.engine.HasAudio().as_bool()),
+                tracks: self.audio.iter().map(|(_, track)| track.clone()).collect(),
+                audio_track: self.audio_track(),
                 ..MediaInfo::default()
             }
         };
         self.sink.info(info);
+    }
+
+    /// Lists the audio streams. Text inside the media is not read on
+    /// Windows yet, so text streams are left out rather than offered
+    /// without their text.
+    fn read_streams(&mut self) {
+        let Some(streams) = &self.streams else {
+            return;
+        };
+        // SAFETY: stream queries on a loaded engine, on the main thread.
+        let count = unsafe { streams.GetNumberOfStreams() }.unwrap_or(0);
+        let mut audio = Vec::new();
+        for stream in 0..count {
+            if stream_guid(streams, stream, &MF_MT_MAJOR_TYPE) != Some(MFMediaType_Audio) {
+                continue;
+            }
+            let mut track = Track::new(TrackKind::Audio, audio.len());
+            if let Some(language) = stream_string(streams, stream, &MF_SD_LANGUAGE) {
+                track = track.with_language(language);
+            }
+            if let Some(name) = stream_string(streams, stream, &MF_SD_STREAM_NAME) {
+                track = track.with_title(name);
+            }
+            audio.push((stream, track));
+        }
+        self.audio = audio;
+    }
+
+    fn audio_track(&self) -> Option<usize> {
+        let streams = self.streams.as_ref()?;
+        self.audio.iter().position(|(stream, _)| {
+            // SAFETY: a stream query on a loaded engine.
+            unsafe { streams.GetStreamSelection(*stream) }.is_ok_and(|on| on.as_bool())
+        })
+    }
+
+    fn select_audio(&mut self, index: usize) {
+        let Some(streams) = &self.streams else {
+            return;
+        };
+        if index >= self.audio.len() {
+            return;
+        }
+        // SAFETY: stream selection on a loaded engine, on the main thread.
+        let result = unsafe {
+            self.audio
+                .iter()
+                .enumerate()
+                .try_for_each(|(position, (stream, _))| {
+                    streams.SetStreamSelection(*stream, position == index)
+                })
+                .and_then(|()| streams.ApplyStreamSelections())
+        };
+        if let Err(error) = result {
+            log(&format!("could not switch the audio track: {error}"));
+        }
     }
 
     fn seek(&mut self, position: Duration) {
@@ -511,6 +589,58 @@ fn trace() -> bool {
     *TRACE.get_or_init(|| std::env::var_os("GPUI_AV_MEDIAFOUNDATION_TRACE").is_some())
 }
 
+/// A stream attribute holding a GUID.
+fn stream_guid(
+    streams: &IMFMediaEngineEx,
+    stream: u32,
+    key: &windows::core::GUID,
+) -> Option<windows::core::GUID> {
+    with_stream_attribute(streams, stream, key, |value| {
+        // SAFETY: reading the union member the tag names.
+        unsafe {
+            let value = &value.Anonymous.Anonymous;
+            (value.vt == VT_CLSID && !value.Anonymous.puuid.is_null())
+                .then(|| *value.Anonymous.puuid)
+        }
+    })
+}
+
+/// A stream attribute holding a string.
+fn stream_string(
+    streams: &IMFMediaEngineEx,
+    stream: u32,
+    key: &windows::core::GUID,
+) -> Option<String> {
+    with_stream_attribute(streams, stream, key, |value| {
+        // SAFETY: reading the union member the tag names.
+        unsafe {
+            let value = &value.Anonymous.Anonymous;
+            if value.vt != VT_LPWSTR || value.Anonymous.pwszVal.is_null() {
+                return None;
+            }
+            value.Anonymous.pwszVal.to_string().ok()
+        }
+    })
+    .filter(|text| !text.is_empty())
+}
+
+fn with_stream_attribute<T>(
+    streams: &IMFMediaEngineEx,
+    stream: u32,
+    key: &windows::core::GUID,
+    read: impl FnOnce(&PROPVARIANT) -> Option<T>,
+) -> Option<T> {
+    // SAFETY: the engine fills a PROPVARIANT we own and clear.
+    unsafe {
+        let mut value = streams.GetStreamAttribute(stream, key).ok()?;
+        let result = read(&value);
+        if let Err(error) = PropVariantClear(&mut value) {
+            log(&format!("could not free a stream attribute: {error}"));
+        }
+        result
+    }
+}
+
 fn error(code: usize, hresult: HRESULT) -> Error {
     const FILE_NOT_FOUND: u32 = 0x8007_0002;
     const PATH_NOT_FOUND: u32 = 0x8007_0003;
@@ -547,6 +677,19 @@ fn log(message: &str) {
 }
 
 impl Session for MfSession {
+    fn select_track(&mut self, kind: TrackKind, index: Option<usize>) {
+        let (TrackKind::Audio, Some(index)) = (kind, index) else {
+            return;
+        };
+        let mut inner = self.inner.borrow_mut();
+        if !inner.loaded {
+            inner.pending_audio = Some(index);
+            return;
+        }
+        inner.select_audio(index);
+        inner.report_info();
+    }
+
     fn play(&mut self) {
         // SAFETY: a plain engine command on the main thread.
         if let Err(error) = unsafe { self.inner.borrow().engine.Play() } {
