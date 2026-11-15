@@ -168,7 +168,21 @@ impl Inner {
                     self.fail(error);
                     return;
                 }
-                Event::MissingPlugin(plugin) => self.missing_plugin = Some(plugin),
+                // playbin plays what it can and leaves out the rest without
+                // an error, so a missing picture or sound decoder would
+                // look like a clip without that track. Refuse it instead,
+                // so a fallback can try another backend.
+                Event::MissingPlugin {
+                    name,
+                    essential: true,
+                } => {
+                    self.fail(Error::new(
+                        ErrorKind::Unsupported,
+                        format!("GStreamer needs {name}, which is not installed"),
+                    ));
+                    return;
+                }
+                Event::MissingPlugin { name, .. } => self.missing_plugin = Some(name),
                 Event::Eos => self.on_end(),
                 Event::Rotation(rotation) => {
                     if self.rotation != Some(rotation) {

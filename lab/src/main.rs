@@ -294,6 +294,7 @@ async fn run_unattended(
                 );
             }
             entry::log(&summary);
+            entry::log(&format!("coverage:\n{}", report.coverage()));
             (serde_json::to_string_pretty(&report), report.failed == 0)
         }
         Mode::Soak {
