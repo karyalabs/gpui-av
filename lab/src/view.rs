@@ -14,8 +14,8 @@ use gpui::{
     Subscription, Task, Window, div, px, rgb,
 };
 use gpui_av::{
-    Backend, ColorMatrix, ColorRange, PlaybackState, PlayerEvent, TransferFunction, VideoPlayer,
-    video,
+    Backend, ColorMatrix, ColorRange, PlaybackState, PlayerEvent, Subtitles, TransferFunction,
+    VideoPlayer, captions, video,
 };
 use web_time::Instant;
 
@@ -72,6 +72,9 @@ enum Stage {
 struct Playing {
     player: Entity<VideoPlayer>,
     meter: Meter,
+    /// A `.vtt` or `.srt` file beside the clip: its name, and the cues or
+    /// why they could not be read.
+    subtitles: Option<(String, Result<Subtitles, String>)>,
     _subscriptions: [Subscription; 2],
     /// Redraws the stats while the media moves: a presenter that shows its
     /// frames outside the window asks for no window frames, so nothing
@@ -179,6 +182,7 @@ impl LabView {
             return;
         };
         let (source, backend, settings) = (clip.source.clone(), backend.clone(), self.settings);
+        let subtitles = clip.source.path().and_then(sidecar_subtitles);
         let player = cx.new(|cx| {
             let mut player = VideoPlayer::with_backend(source, backend, cx);
             player.set_volume(settings.volume, cx);
@@ -224,6 +228,7 @@ impl LabView {
         self.playing = Some(Playing {
             player,
             meter: Meter::new(),
+            subtitles,
             _subscriptions: subscriptions,
             _ticker: ticker,
         });
@@ -328,6 +333,16 @@ impl LabView {
                 ),
             ),
             ("buffered", buffered_label(&player.buffered())),
+            (
+                "subtitles",
+                match &playing.subtitles {
+                    None => "-".to_string(),
+                    Some((name, Ok(subtitles))) => {
+                        format!("{name} ({} cues)", subtitles.cues().len())
+                    }
+                    Some((name, Err(error))) => format!("{name}: {error}"),
+                },
+            ),
             (
                 "size",
                 or_dash(
@@ -516,6 +531,12 @@ impl LabView {
         ))
     }
 
+    /// The current clip's subtitles, when it has some that parsed.
+    fn subtitles(&self) -> Option<&Subtitles> {
+        let (_, subtitles) = self.playing.as_ref()?.subtitles.as_ref()?;
+        subtitles.as_ref().ok()
+    }
+
     /// The area the picture shows in.
     fn stage(&self) -> Stateful<Div> {
         let stage = div().id("stage").flex_1().min_h_0().bg(rgb(0x000000));
@@ -523,7 +544,10 @@ impl LabView {
             return stage;
         };
         match self.stage {
-            Stage::Fill => stage.child(video(player).size_full()),
+            Stage::Fill => stage.relative().child(video(player).size_full()).children(
+                self.subtitles()
+                    .map(|subtitles| captions(player, subtitles)),
+            ),
             Stage::Scroll => {
                 let note = |text: &'static str| {
                     div()
@@ -746,6 +770,20 @@ fn state_label(state: &PlaybackState) -> String {
 }
 
 /// A position as minutes, seconds and tenths: `1:07.3`.
+/// The subtitle file beside `clip` with the same name and a `.vtt` or
+/// `.srt` extension, if there is one, read and parsed.
+fn sidecar_subtitles(clip: &std::path::Path) -> Option<(String, Result<Subtitles, String>)> {
+    let path = ["vtt", "srt"]
+        .iter()
+        .map(|extension| clip.with_extension(extension))
+        .find(|path| path.is_file())?;
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    let parsed = std::fs::read_to_string(&path)
+        .map_err(|error| error.to_string())
+        .and_then(|text| Subtitles::parse(&text).map_err(|error| error.to_string()));
+    Some((name, parsed))
+}
+
 /// The buffered ranges as `0:00-0:12, 0:30-0:41`, or `-` when unknown.
 fn buffered_label(ranges: &[std::ops::Range<Duration>]) -> String {
     if ranges.is_empty() {

@@ -33,6 +33,7 @@ mod fallback;
 mod media;
 mod player;
 mod source;
+mod subtitles;
 
 pub use backend::{
     Backend, BackendEvent, EventSink, Placement, Session, Stats, default_backend,
@@ -44,6 +45,7 @@ pub use fallback::Fallback;
 pub use media::{ColorInfo, ColorMatrix, ColorRange, MediaInfo, Rotation, TransferFunction};
 pub use player::{PlaybackState, PlayerEvent, VideoPlayer};
 pub use source::{Location, Source};
+pub use subtitles::{Captions, Cue, SubtitleError, Subtitles, captions};
 
 // The fit modes are GPUI's own, so `video()` reads like `img()`.
 pub use gpui::ObjectFit;

@@ -290,6 +290,18 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   reads `AVPlayerItem.loadedTimeRanges`, the web the element's
   `buffered`, and GStreamer playbin's buffering query (in time, or in
   percent of the length). The lab shows them in its stats panel.
+- **Subtitles.** `gpui_av::Subtitles::parse` reads a sidecar WebVTT or
+  SubRip file (telling them apart by WebVTT's header; notes, styles,
+  regions and cue settings are skipped, inline markup is stripped) into
+  cues sorted by start, and answers which cues show at a position.
+  `captions(&player, &subtitles)` is a plain element that shows the cue
+  due at the player's position at the bottom of its parent, styleable
+  like a `div`. It needs no backend support and works on every backend
+  that draws into the window; it follows the position because the window
+  draws every frame while a picture plays. On the web GPUI cannot draw
+  over the `<video>` overlay, so there captions need the element's own
+  text tracks (not built yet). The lab loads a `.vtt` or `.srt` with the
+  same name as a clip file and shows it over the picture.
 - **Stats.** `Session::stats` reports frames presented and dropped (zero
   for a session that cannot tell); `VideoPlayer::stats` passes them on for
   the lab's stats panel and bench, and keeps the last counts after a
@@ -795,7 +807,7 @@ about 2026-11-24) runs beside it and blocks nothing here.
 | S1 | `Fallback`: backends tried in order, so media one decoder refuses plays through another (section 4.2) | Done 2026-11-15 |
 | S2 | A platform default: one crate whose `init(cx)` sets the right `Fallback` for the target (macOS: AVFoundation, then GStreamer where installed; Linux: GStreamer; web: the browser), each backend behind a cargo feature an app can turn off; the lab gains an "auto" entry | Done 2026-11-15; GStreamer not yet played on macOS or Windows |
 | S3 | The public API made ready for others: docs on every item with runnable examples, a quick start in the README, `buffered`, and a check that the crates package for crates.io (publishing itself waits for Arya) | `buffered` done 2026-11-15 (macOS part compiled, not yet run on a Mac); `gpui-av` packages and builds alone on stock gpui-pre; docs and examples next |
-| S4 | Subtitles: sidecar WebVTT and SRT parsed in the API crate, cues by position, and an element that draws them over the picture on the native backends (on the web the `<video>` element's own text tracks, since GPUI cannot draw over the overlay) | |
+| S4 | Subtitles: sidecar WebVTT and SRT parsed in the API crate, cues by position, and an element that draws them over the picture on the native backends (on the web the `<video>` element's own text tracks, since GPUI cannot draw over the overlay) || Sidecar WebVTT and SRT with `captions()` done 2026-11-15 for backends that draw into the window (checked with GStreamer under Xvfb); web text tracks not built |
 | S5 | Audio and text tracks inside the media: list them and pick one, on each backend | |
 | S6 | Windows: a Media Foundation backend (`IMFMediaEngine`), drawn as GPUI images first, checked by a Windows run in GitHub Actions started by hand (CI stays one fast job) | |
 | S7 | Wider media: E7 (MKV and WebM on macOS and the web), tier B in the corpus and the bench's coverage table per backend | |
