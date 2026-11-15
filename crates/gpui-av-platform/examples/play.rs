@@ -8,8 +8,8 @@
 //! Click the picture to pause and play again.
 
 use gpui::{
-    App, AppContext, Bounds, Context, Entity, IntoElement, ParentElement, Render, Styled,
-    Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
+    App, AppContext, Bounds, Context, Entity, IntoElement, ParentElement, Render, Styled, Window,
+    WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
 };
 use gpui_av::{ObjectFit, PlaybackState, Source, VideoPlayer, video};
 
@@ -30,7 +30,11 @@ impl Render for Player {
             .size_full()
             .bg(rgb(0x000000))
             .text_color(rgb(0xffffff))
-            .child(video(&self.player).object_fit(ObjectFit::Contain).size_full())
+            .child(
+                video(&self.player)
+                    .object_fit(ObjectFit::Contain)
+                    .size_full(),
+            )
             .children(status.map(|status| div().absolute().top_4().left_4().child(status)))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.player.update(cx, |player, _| {
