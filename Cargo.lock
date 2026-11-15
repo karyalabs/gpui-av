@@ -2082,6 +2082,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui-av-remux"
+version = "0.0.0"
+
+[[package]]
 name = "gpui-av-web"
 version = "0.0.0"
 dependencies = [

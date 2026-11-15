@@ -217,6 +217,7 @@ crates/gpui-av-web            web backend (E3), depends on gpui-av
 crates/gpui-av-gstreamer      Linux backend (E2), depends on gpui-av
 crates/gpui-av-mediafoundation Windows backend (S6), depends on gpui-av
 crates/gpui-av-platform       the platform's backends in one call (S2)
+crates/gpui-av-remux          Matroska and WebM to fragmented MP4 (E7), no deps
 lab/                          gpui-av-lab (L0), with its test-pattern backend
 ```
 
@@ -587,7 +588,7 @@ question; when it is done, the answer is folded into this spec.
 | E4 | Web: WebCodecs frames drawn inside the canvas without an overlay | One clip plays in Chrome; cost measured against E3 |
 | E5 | Zero-copy on wgpu: implement `PrimitiveBatch::Surfaces` (NV12) in gpui-pre-wgpu | Patch works locally; decide whether to propose it to Zed. **Step 1 done 2026-11-14 (karyalabs/zed#7, NV12 from memory): on the A10 CPU falls by half to three quarters with NVDEC (1080p60 158% to 52%, 4K 10-bit HEVC 380% to 128% and no drops), copies 0.01 ms a frame.** Step 2 (dmabuf, no copy out of video memory) is written (karyalabs/zed#8, `GPUI_AV_DMABUF=1`) but unmeasured: on OVH's NVIDIA image no VA-API decoder runs (2026-11-15, L4), so it waits for an Intel or AMD Linux desktop. See `experiments/e2-gstreamer` |
 | E6 | Can we build on gpui-video-player or alhazen instead of writing backends? | **Done 2026-11-12: no; reuse ideas.** See `experiments/e6-existing-crates` |
-| E7 | Containers the platform will not open (MKV on AVFoundation and in browsers): our own Rust demuxer feeding VideoToolbox / WebCodecs (Mediabunny on the web), or an optional GStreamer backend on macOS? | The MKV clips in the corpus play on macOS and in Chrome through the chosen path; cost measured |
+| E7 | Containers the platform will not open (MKV on AVFoundation and in browsers): our own Rust demuxer feeding VideoToolbox / WebCodecs (Mediabunny on the web), or an optional GStreamer backend on macOS? | The MKV clips in the corpus play on macOS and in Chrome through the chosen path; cost measured. **Path chosen 2026-11-15: remux to fragmented MP4 in pure Rust (`gpui-av-remux`) and keep the platform player, fed through an HLS playlist on macOS and Media Source Extensions on the web.** In the sandbox every frame comes through, decoded video matches the source frame for frame, A/V sync is kept to the millisecond, and 30 MB remux in 0.08 s. Playing it on a Mac and in browsers is next. See `experiments/e7-mkv-remux` |
 | E8 | macOS: real HDR output. Route chosen 2026-11-13: an extended range path in our GPUI (section 4.3, patches 1 and 2). The alternative, a second presenter that lets macOS draw the video in its own layer over the element (`AVSampleBufferDisplayLayer` or `AVPlayerLayer`, placed as the web overlay is; GPUI cannot draw over it), is not scheduled. | An HDR10 and an HLG clip show with extended brightness on an XDR display through the chosen path; cost and limits recorded |
 | L0 | Build `gpui-av-lab`, the playground and benchmark app (section 5.1) | Interactive mode and `--bench` play the tier A corpus from local and HTTP sources. **Done for tier A 2026-11-13**, natively and in a browser |
 
@@ -845,7 +846,7 @@ about 2026-11-24) runs beside it and blocks nothing here.
 | S4 | Subtitles: sidecar WebVTT and SRT parsed in the API crate, cues by position, and an element that draws them over the picture on the native backends (on the web the `<video>` element's own text tracks, since GPUI cannot draw over the overlay) || Sidecar WebVTT and SRT with `captions()` done 2026-11-15 for backends that draw into the window (checked with GStreamer under Xvfb); web text tracks not built |
 | S5 | Audio and text tracks inside the media: list them and pick one, on each backend || GStreamer done 2026-11-15 (list, switch, in-media text through `captions`, checked in the lab under Xvfb); macOS written 2026-11-15 (media selection groups for audio and text, text through a legible output into `captions`; compiles, not yet run on a Mac); tier A gains `h264-1280x720-tracks.mp4` (2 audio, 1 text) and the bench checks the counts on backends that list tracks; Windows lists and switches audio tracks through `IMFMediaEngineEx` stream selection (#28; text inside the media not read on Windows yet, so its text tracks are not listed); web next |
 | S6 | Windows: a Media Foundation backend (`IMFMediaEngine`), drawn as GPUI images first, checked by a Windows run in GitHub Actions started by hand (CI stays one fast job) || Done 2026-11-15 (#24): every engine check passes on `windows-latest`, and the lab's bench gives 13 of 15 in a GPUI window there (after #26). Open: HEVC needs the Store's HEVC extension (absent on the runner), an audio-only file fails with no audio device (the runner has none; should play silently); no request headers yet. A truncated MP4 left the engine's clock running past the stated length with no error; it now fails as `Decode` once the drawn picture has stopped for 4 s (or ten frame intervals, for slow video) while the clock runs, or, with no window, once the clock passes the length (#26) |
-| S7 | Wider media: E7 (MKV and WebM on macOS and the web), tier B in the corpus and the bench's coverage table per backend | Tier B and the coverage table done 2026-11-15 (#29): 19 clips from `scripts/make-tier-b.sh` (`corpus/tier-b.json`). GStreamer 1.24 with plugins good, bad and libav plays 18 of 19 under Xvfb; the gap is full-range H.264, which gst-libav decodes and reports as limited range (so its picture is too, an upstream issue). GStreamer without a decoder for the picture or sound now fails as `Unsupported` instead of playing the rest silently. E7 next |
+| S7 | Wider media: E7 (MKV and WebM on macOS and the web), tier B in the corpus and the bench's coverage table per backend | Tier B and the coverage table done 2026-11-15 (#29): 19 clips from `scripts/make-tier-b.sh` (`corpus/tier-b.json`). GStreamer 1.24 with plugins good, bad and libav plays 18 of 19 under Xvfb; the gap is full-range H.264, which gst-libav decodes and reports as limited range (so its picture is too, an upstream issue). GStreamer without a decoder for the picture or sound now fails as `Unsupported` instead of playing the rest silently. E7's remuxer done 2026-11-15 (`gpui-av-remux`); the AVFoundation HLS path and the web MSE path next. VP9 on macOS stays a gap (Apple's HLS does not take it) |
 
 ## 6. Risks
 
@@ -874,6 +875,11 @@ about 2026-11-24) runs beside it and blocks nothing here.
 
 ## 7. Decisions
 
+- 2026-11-15 (E7): Matroska and WebM on AVFoundation and in browsers are
+  remuxed to fragmented MP4 by our own pure-Rust crate and played by the
+  platform's player (HLS from a localhost server on macOS, MSE on the web),
+  rather than demuxed into VideoToolbox or WebCodecs: the platform players
+  already own the clock, sync and seeking, and remuxing decodes nothing.
 - 2026-11-15: after the POC, gpui-av ships continuously along section 5.3
   (Arya: "we've basically proven the POC works, so we can keep
   shipping"), and Windows is a goal, not a non-goal. Media a platform's
