@@ -152,6 +152,12 @@ impl<R: Read + Seek> Ebml<R> {
         self.position
     }
 
+    /// Reads the position back from the reader, after a failed read.
+    pub(crate) fn resync(&mut self) -> io::Result<()> {
+        self.position = self.inner.stream_position()?;
+        Ok(())
+    }
+
     pub(crate) fn seek(&mut self, position: u64) -> io::Result<()> {
         if position != self.position {
             self.inner.seek(SeekFrom::Start(position))?;

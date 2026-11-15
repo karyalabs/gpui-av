@@ -1,5 +1,6 @@
 //! The backend: one `<video>` element per session.
 
+mod mse;
 mod probe;
 mod proxy;
 mod session;
@@ -15,9 +16,16 @@ use self::session::WebSession;
 
 /// The web backend: plays a URL with the browser's own `<video>` element,
 /// placed over the GPUI canvas.
+///
+/// A Matroska or WebM file the browser will not open (Safari and Firefox
+/// with Matroska, Safari with most WebM) is remuxed to fragmented MP4 as it
+/// plays and fed to the same element through Media Source Extensions, so
+/// the browser's own decoders still play it. That needs a server that
+/// takes range requests (and, for another origin, CORS that allows them).
 #[derive(Default)]
 pub struct WebBackend {
     proxy: Option<Rc<Proxy>>,
+    remux_always: bool,
 }
 
 impl WebBackend {
@@ -36,7 +44,17 @@ impl WebBackend {
     pub fn with_service_worker(script_url: &str) -> Self {
         Self {
             proxy: Some(Proxy::start(script_url)),
+            remux_always: false,
         }
+    }
+
+    /// Plays every Matroska and WebM file through Media Source Extensions,
+    /// even where the browser would open it itself: one path in every
+    /// browser, and a way to test that path in one that needs it less.
+    /// Sniffing the file costs one small request before it plays.
+    pub fn remux_matroska_always(mut self) -> Self {
+        self.remux_always = true;
+        self
     }
 }
 
@@ -72,7 +90,7 @@ impl Backend for WebBackend {
                 ));
             }
         };
-        let session = WebSession::open(url, source.headers(), proxy, events)
+        let session = WebSession::open(url, source.headers(), proxy, self.remux_always, events)
             .map_err(|error| Error::new(ErrorKind::Other, describe(&error)))?;
         Ok(Box::new(session))
     }

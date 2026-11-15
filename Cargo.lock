@@ -2091,6 +2091,7 @@ name = "gpui-av-web"
 version = "0.0.0"
 dependencies = [
  "gpui-av",
+ "gpui-av-remux",
  "gpui-pre",
  "js-sys",
  "raw-window-handle",
