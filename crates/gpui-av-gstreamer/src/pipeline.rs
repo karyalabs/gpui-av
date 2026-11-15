@@ -9,7 +9,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui::RenderImage;
-use gpui_av::{ColorInfo, ColorMatrix, ColorRange, Error, ErrorKind, Rotation, TransferFunction};
+use gpui_av::{
+    ColorInfo, ColorMatrix, ColorRange, Error, ErrorKind, Rotation, Track, TrackKind,
+    TransferFunction,
+};
 use image::{Frame as ImageFrame, RgbaImage};
 use smallvec::SmallVec;
 
@@ -161,6 +164,8 @@ pub(crate) struct Pipeline {
     header_setup: Option<Arc<HeaderSetup>>,
     /// A local file: all of it is there to play.
     local: bool,
+    /// Where playbin sends the selected text track.
+    text_sink: Option<Object>,
 }
 
 /// The request headers, and whether the source playbin picked could not
@@ -220,9 +225,31 @@ impl Pipeline {
             (gobject.g_object_set)(
                 playbin,
                 c"flags".as_ptr(),
-                flags | ffi::GST_PLAY_FLAG_NATIVE_VIDEO,
+                // Text goes to our own sink (below), never burned into
+                // the picture; the session shows it only once chosen.
+                flags | ffi::GST_PLAY_FLAG_NATIVE_VIDEO | ffi::GST_PLAY_FLAG_TEXT,
                 ptr::null::<c_void>(),
             );
+            let text_sink = (gst.gst_element_factory_make)(c"appsink".as_ptr(), ptr::null());
+            let text_sink = (!text_sink.is_null()).then(|| {
+                let text_sink = Object((gst.gst_object_ref_sink)(text_sink));
+                // Keep only the latest few cues if nobody reads them.
+                (gobject.g_object_set)(
+                    text_sink.0,
+                    c"max-buffers".as_ptr(),
+                    8 as c_uint,
+                    c"drop".as_ptr(),
+                    1 as c_int,
+                    ptr::null::<c_void>(),
+                );
+                (gobject.g_object_set)(
+                    playbin,
+                    c"text-sink".as_ptr(),
+                    text_sink.0,
+                    ptr::null::<c_void>(),
+                );
+                text_sink
+            });
             (gobject.g_object_set)(
                 playbin,
                 c"uri".as_ptr(),
@@ -272,6 +299,7 @@ impl Pipeline {
                 shared,
                 header_setup,
                 local,
+                text_sink,
             })
         }
     }
@@ -426,6 +454,135 @@ impl Pipeline {
 
     pub fn audio_streams(&self) -> i32 {
         self.int_property(c"n-audio")
+    }
+
+    fn set_int_property(&self, name: &std::ffi::CStr, value: c_int) {
+        // SAFETY: `name` is an int property of playbin.
+        unsafe {
+            (self.api.gobject.g_object_set)(
+                self.playbin,
+                name.as_ptr(),
+                value,
+                ptr::null::<c_void>(),
+            )
+        };
+    }
+
+    /// The audio and text tracks, with the language and title tags
+    /// playbin collected for each.
+    pub fn tracks(&self) -> Vec<Track> {
+        let mut tracks = Vec::new();
+        for (kind, count, signal) in [
+            (TrackKind::Audio, c"n-audio", c"get-audio-tags"),
+            (TrackKind::Text, c"n-text", c"get-text-tags"),
+        ] {
+            for index in 0..self.int_property(count).max(0) {
+                let mut track = Track::new(kind, index as usize);
+                let mut list: *mut c_void = ptr::null_mut();
+                // SAFETY: the signal returns a tag list we own, or null;
+                // `tag` releases it.
+                unsafe {
+                    (self.api.gobject.g_signal_emit_by_name)(
+                        self.playbin,
+                        signal.as_ptr(),
+                        index,
+                        &mut list,
+                    );
+                    if !list.is_null() {
+                        track.language = self.tag(list, c"language-code");
+                        track.title = self.tag(list, c"title");
+                        (self.api.gst.gst_mini_object_unref)(list);
+                    }
+                }
+                tracks.push(track);
+            }
+        }
+        tracks
+    }
+
+    /// # Safety
+    /// `list` must be a valid tag list.
+    unsafe fn tag(&self, list: *mut c_void, name: &std::ffi::CStr) -> Option<String> {
+        // SAFETY: per the contract; the string is ours to free.
+        unsafe {
+            let mut value: *mut c_char = ptr::null_mut();
+            let found =
+                (self.api.gst.gst_tag_list_get_string)(list, name.as_ptr(), &mut value) != 0;
+            let text = ffi::string(value);
+            (self.api.glib.g_free)(value.cast());
+            text.filter(|text| found && !text.is_empty())
+        }
+    }
+
+    /// The audio track playing, when there is one.
+    pub fn audio_track(&self) -> Option<usize> {
+        usize::try_from(self.int_property(c"current-audio")).ok()
+    }
+
+    /// The text track playbin sends to the text sink.
+    pub fn text_track(&self) -> Option<usize> {
+        usize::try_from(self.int_property(c"current-text")).ok()
+    }
+
+    /// The next cue the text sink has, if any: its text (markup removed),
+    /// start and end.
+    pub fn take_cue(&self) -> Option<(String, Option<Duration>, Option<Duration>)> {
+        let sink = self.text_sink.as_ref()?;
+        let gst = &self.api.gst;
+        // SAFETY: a valid appsink; the sample and its buffer are ours until
+        // unreferenced, and the mapped bytes are read only while mapped.
+        unsafe {
+            let sample = (self.api.app.gst_app_sink_try_pull_sample)(sink.0, 0);
+            if sample.is_null() {
+                return None;
+            }
+            let buffer = (gst.gst_sample_get_buffer)(sample);
+            let mut cue = None;
+            if !buffer.is_null() {
+                let time = |value: u64| {
+                    (value != ffi::GST_CLOCK_TIME_NONE).then(|| Duration::from_nanos(value))
+                };
+                let start = time((*buffer).pts);
+                let end = start
+                    .zip(time((*buffer).duration))
+                    .map(|(start, length)| start + length);
+                let mut map = std::mem::zeroed::<ffi::GstMapInfo>();
+                if (gst.gst_buffer_map)(buffer, &mut map, ffi::GST_MAP_READ) != 0 {
+                    let bytes = std::slice::from_raw_parts(map.data, map.size);
+                    let text = strip_markup(&String::from_utf8_lossy(bytes));
+                    (gst.gst_buffer_unmap)(buffer, &mut map);
+                    cue = Some((text, start, end));
+                }
+            }
+            (gst.gst_mini_object_unref)(sample);
+            cue
+        }
+    }
+
+    /// Applies a track choice. Turning text off is the session's part (it
+    /// stops showing cues); an audio track cannot be turned off.
+    pub fn select_track(&self, kind: TrackKind, index: Option<usize>) {
+        match (kind, index) {
+            (TrackKind::Audio, Some(index)) => self.set_audio_track(index),
+            (TrackKind::Text, Some(index)) => self.set_text_track(index),
+            _ => {}
+        }
+    }
+
+    fn set_audio_track(&self, index: usize) {
+        if let Ok(index) = c_int::try_from(index)
+            && index < self.int_property(c"n-audio")
+        {
+            self.set_int_property(c"current-audio", index);
+        }
+    }
+
+    fn set_text_track(&self, index: usize) {
+        if let Ok(index) = c_int::try_from(index)
+            && index < self.int_property(c"n-text")
+        {
+            self.set_int_property(c"current-text", index);
+        }
     }
 
     /// The size of the frames the sink gets (upright), with the pixel
@@ -1225,6 +1382,27 @@ fn to_time(format: c_int, start: i64, stop: i64, duration: Duration) -> Option<R
     (start < stop).then_some(start..stop)
 }
 
+/// Removes Pango markup (`<i>`, `<span ...>`) and its entities from a cue.
+fn strip_markup(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_tag = false;
+    for char in text.chars() {
+        match char {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            _ if !in_tag => out.push(char),
+            _ => {}
+        }
+    }
+    out.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+        .trim_end_matches(['\n', '\0'])
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1283,5 +1461,13 @@ mod tests {
         );
         assert_eq!(to_time(ffi::GST_FORMAT_PERCENT, half, half, duration), None);
         assert_eq!(to_time(2, 0, 10, duration), None);
+    }
+
+    #[test]
+    fn cue_markup_is_removed() {
+        assert_eq!(
+            strip_markup("<i>Hello</i> &amp; <span foreground=\"red\">bye</span>\n"),
+            "Hello & bye"
+        );
     }
 }

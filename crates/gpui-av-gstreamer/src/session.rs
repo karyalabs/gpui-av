@@ -6,9 +6,10 @@ use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use gpui::{App, Corners, Task, Window};
+use gpui::{App, Corners, SharedString, Task, Window};
 use gpui_av::{
     Error, ErrorKind, EventSink, MediaInfo, Placement, PlaybackState, Rotation, Session, Stats,
+    TrackKind,
 };
 
 use crate::ffi;
@@ -53,6 +54,12 @@ struct Inner {
     current: c_int,
     /// A seek asked for before the media loaded.
     pending_seek: Option<Duration>,
+    /// Track choices made before the streams were known.
+    pending_tracks: Vec<(TrackKind, Option<usize>)>,
+    /// Whether a text track was chosen; text inside the media starts off.
+    text_on: bool,
+    /// The latest cue from the text track: its text, start and end.
+    cue: Option<(String, Option<Duration>, Option<Duration>)>,
     /// The seek in flight.
     seeking: Option<Duration>,
     rotation: Option<Rotation>,
@@ -91,6 +98,9 @@ impl GstSession {
             buffering: false,
             current: ffi::GST_STATE_NULL,
             pending_seek: None,
+            pending_tracks: Vec::new(),
+            text_on: false,
+            cue: None,
             seeking: None,
             rotation: None,
             missing_plugin: None,
@@ -141,6 +151,9 @@ impl Inner {
         if let Some(error) = self.truncated() {
             self.fail(error);
             return;
+        }
+        while let Some(cue) = self.pipeline.take_cue() {
+            self.cue = Some(cue);
         }
         while let Some(message) = self.pipeline.pop() {
             match self.pipeline.read(&message) {
@@ -272,8 +285,18 @@ impl Inner {
         self.report(PlaybackState::Failed(error));
     }
 
+    fn apply_track(&mut self, kind: TrackKind, index: Option<usize>) {
+        if kind == TrackKind::Text {
+            self.text_on = index.is_some();
+        }
+        self.pipeline.select_track(kind, index);
+    }
+
     fn on_loaded(&mut self) {
         self.loaded = true;
+        for (kind, index) in std::mem::take(&mut self.pending_tracks) {
+            self.apply_track(kind, index);
+        }
         self.send_info();
         if let Some(position) = self.pending_seek.take() {
             self.seek_to(position);
@@ -306,6 +329,9 @@ impl Inner {
             } else {
                 Default::default()
             },
+            tracks: self.pipeline.tracks(),
+            audio_track: self.pipeline.audio_track(),
+            text_track: self.text_on.then(|| self.pipeline.text_track()).flatten(),
         };
         self.events.info(info);
     }
@@ -435,6 +461,28 @@ impl Session for GstSession {
 
     fn set_looping(&mut self, looping: bool) {
         self.inner.borrow_mut().looping = looping;
+    }
+
+    fn select_track(&mut self, kind: TrackKind, index: Option<usize>) {
+        let mut inner = self.inner.borrow_mut();
+        if !inner.loaded {
+            inner.pending_tracks.push((kind, index));
+            return;
+        }
+        inner.apply_track(kind, index);
+        inner.send_info();
+    }
+
+    fn text(&self) -> Option<SharedString> {
+        let position = self.position();
+        let inner = self.inner.borrow();
+        if !inner.text_on {
+            return None;
+        }
+        let (text, start, end) = inner.cue.as_ref()?;
+        let started = start.is_none_or(|start| start <= position);
+        let ended = end.is_some_and(|end| position >= end);
+        (started && !ended && !text.is_empty()).then(|| SharedString::from(text.clone()))
     }
 
     fn position(&self) -> Duration {

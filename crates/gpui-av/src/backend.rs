@@ -13,9 +13,9 @@ use std::ops::Range;
 use std::rc::Rc;
 use std::time::Duration;
 
-use gpui::{App, Bounds, Global, Pixels, Window};
+use gpui::{App, Bounds, Global, Pixels, SharedString, Window};
 
-use crate::{Error, MediaInfo, PlaybackState, Source};
+use crate::{Error, MediaInfo, PlaybackState, Source, TrackKind};
 
 /// A decoder stack that can play media.
 ///
@@ -74,6 +74,22 @@ pub trait Session: 'static {
 
     /// When looping, the media starts again at its end instead of ending.
     fn set_looping(&mut self, looping: bool);
+
+    /// Picks the track of `kind` to play: an index into that kind's
+    /// tracks in [`MediaInfo::tracks`], or `None` to turn text off (an
+    /// audio track cannot be turned off this way; mute instead). The
+    /// session reports the new choice in its next [`BackendEvent::Info`].
+    /// The default ignores the request, for a session that cannot switch.
+    fn select_track(&mut self, _kind: TrackKind, _index: Option<usize>) {}
+
+    /// The text of the chosen text track inside the media that shows at
+    /// the current position, markup removed and lines separated by `\n`;
+    /// `None` when nothing shows, text is off, or the session draws text
+    /// into the picture itself. The [`captions()`](crate::captions)
+    /// element shows it.
+    fn text(&self) -> Option<SharedString> {
+        None
+    }
 
     /// The current position on the session's clock (the audio clock, where
     /// there is one).

@@ -30,7 +30,10 @@ pub struct Cue {
 /// ```ignore
 /// let subtitles = Subtitles::parse(&std::fs::read_to_string("film.vtt")?)?;
 /// // In render, over the picture:
-/// div().relative().child(video(&player).size_full()).child(captions(&player, &subtitles))
+/// div()
+///     .relative()
+///     .child(video(&player).size_full())
+///     .child(captions(&player).subtitles(&subtitles))
 /// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Subtitles {
@@ -232,7 +235,10 @@ fn strip_markup(line: &str) -> String {
         .replace("&amp;", "&")
 }
 
-/// Shows the subtitle due at `player`'s position. Put it over the
+/// Shows the subtitles for `player`: the cue due at its position from a
+/// sidecar file given with [`Captions::subtitles`], or else the text of the
+/// text track chosen inside the media
+/// ([`VideoPlayer::select_text_track`]). Put it over the
 /// [`video()`](crate::video) element, in a parent with `relative()`: by
 /// default it sits at the bottom centre, as white text on a dark band, and
 /// takes the usual style methods to change that.
@@ -240,10 +246,10 @@ fn strip_markup(line: &str) -> String {
 /// While the picture plays, the window draws every frame, so the text
 /// follows the position. With a backend whose picture shows by itself (the
 /// web's), GPUI cannot draw over it at all.
-pub fn captions(player: &Entity<VideoPlayer>, subtitles: &Subtitles) -> Captions {
+pub fn captions(player: &Entity<VideoPlayer>) -> Captions {
     Captions {
         player: player.clone(),
-        subtitles: subtitles.clone(),
+        subtitles: None,
         base: div(),
     }
 }
@@ -252,8 +258,16 @@ pub fn captions(player: &Entity<VideoPlayer>, subtitles: &Subtitles) -> Captions
 #[derive(IntoElement)]
 pub struct Captions {
     player: Entity<VideoPlayer>,
-    subtitles: Subtitles,
+    subtitles: Option<Subtitles>,
     base: Div,
+}
+
+impl Captions {
+    /// Shows these sidecar subtitles instead of the media's own text.
+    pub fn subtitles(mut self, subtitles: &Subtitles) -> Self {
+        self.subtitles = Some(subtitles.clone());
+        self
+    }
 }
 
 impl Styled for Captions {
@@ -264,8 +278,11 @@ impl Styled for Captions {
 
 impl RenderOnce for Captions {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let position = self.player.read(cx).position();
-        let text = self.subtitles.text_at(position);
+        let player = self.player.read(cx);
+        let text = match &self.subtitles {
+            Some(subtitles) => subtitles.text_at(player.position()),
+            None => player.text(),
+        };
         let band = text.map(|text| {
             div()
                 .px(px(10.))

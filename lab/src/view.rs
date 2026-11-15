@@ -14,8 +14,8 @@ use gpui::{
     Subscription, Task, Window, div, px, rgb,
 };
 use gpui_av::{
-    Backend, ColorMatrix, ColorRange, PlaybackState, PlayerEvent, Subtitles, TransferFunction,
-    VideoPlayer, captions, video,
+    Backend, ColorMatrix, ColorRange, MediaInfo, PlaybackState, PlayerEvent, Subtitles, Track,
+    TrackKind, TransferFunction, VideoPlayer, captions, video,
 };
 use web_time::Instant;
 
@@ -235,6 +235,32 @@ impl LabView {
         cx.notify();
     }
 
+    /// Moves to the next track of `kind`; text goes round through off.
+    fn next_track(&mut self, kind: TrackKind, cx: &mut Context<Self>) {
+        let Some(player) = self.player() else { return };
+        player.update(cx, |player, _| {
+            let info = player.info();
+            let count = tracks_of(info, kind).count();
+            if count == 0 {
+                return;
+            }
+            match kind {
+                TrackKind::Audio => {
+                    let next = info.audio_track.map_or(0, |index| (index + 1) % count);
+                    player.select_audio_track(next);
+                }
+                _ => {
+                    let next = match info.text_track {
+                        None => Some(0),
+                        Some(index) if index + 1 < count => Some(index + 1),
+                        Some(_) => None,
+                    };
+                    player.select_text_track(next);
+                }
+            }
+        });
+    }
+
     fn toggle_play(&mut self, cx: &mut Context<Self>) {
         let Some(player) = self.player() else { return };
         player.update(cx, |player, _| match player.state() {
@@ -333,6 +359,14 @@ impl LabView {
                 ),
             ),
             ("buffered", buffered_label(&player.buffered())),
+            (
+                "audio track",
+                track_label(info, TrackKind::Audio, info.audio_track),
+            ),
+            (
+                "text track",
+                track_label(info, TrackKind::Text, info.text_track),
+            ),
             (
                 "subtitles",
                 match &playing.subtitles {
@@ -506,6 +540,12 @@ impl LabView {
                     .text_color(rgb(MUTED))
                     .child(format!("volume {:.0}%", settings.volume * 100.)),
             )
+            .child(button("audio", "Audio", false).on_click(
+                cx.listener(|this, _: &ClickEvent, _, cx| this.next_track(TrackKind::Audio, cx)),
+            ))
+            .child(button("text", "Text", false).on_click(
+                cx.listener(|this, _: &ClickEvent, _, cx| this.next_track(TrackKind::Text, cx)),
+            ))
             .child(div().flex_1())
             .child(self.stage_button("scroll", "Scroll", Stage::Scroll, cx))
             .child(self.stage_button("hide", "Hide", Stage::Hidden, cx))
@@ -544,10 +584,15 @@ impl LabView {
             return stage;
         };
         match self.stage {
-            Stage::Fill => stage.relative().child(video(player).size_full()).children(
-                self.subtitles()
-                    .map(|subtitles| captions(player, subtitles)),
-            ),
+            Stage::Fill => {
+                stage
+                    .relative()
+                    .child(video(player).size_full())
+                    .child(match self.subtitles() {
+                        Some(subtitles) => captions(player).subtitles(subtitles),
+                        None => captions(player),
+                    })
+            }
             Stage::Scroll => {
                 let note = |text: &'static str| {
                     div()
@@ -770,6 +815,35 @@ fn state_label(state: &PlaybackState) -> String {
 }
 
 /// A position as minutes, seconds and tenths: `1:07.3`.
+fn tracks_of(info: &MediaInfo, kind: TrackKind) -> impl Iterator<Item = &Track> {
+    info.tracks.iter().filter(move |track| track.kind == kind)
+}
+
+/// `2 of 3: fra, Commentary`, `off of 2`, or `-` when there are none.
+fn track_label(info: &MediaInfo, kind: TrackKind, selected: Option<usize>) -> String {
+    let count = tracks_of(info, kind).count();
+    if count == 0 {
+        return "-".to_string();
+    }
+    let Some(index) = selected else {
+        return format!("off of {count}");
+    };
+    let names = tracks_of(info, kind)
+        .find(|track| track.index == index)
+        .map(|track| {
+            [track.language.as_deref(), track.title.as_deref()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|names| !names.is_empty());
+    match names {
+        Some(names) => format!("{} of {count}: {names}", index + 1),
+        None => format!("{} of {count}", index + 1),
+    }
+}
+
 /// The subtitle file beside `clip` with the same name and a `.vtt` or
 /// `.srt` extension, if there is one, read and parsed.
 fn sidecar_subtitles(clip: &std::path::Path) -> Option<(String, Result<Subtitles, String>)> {

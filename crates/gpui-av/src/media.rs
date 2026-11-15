@@ -23,6 +23,69 @@ pub struct MediaInfo {
     pub has_audio: Option<bool>,
     /// How the video encodes colour.
     pub color: ColorInfo,
+    /// The audio and text tracks inside the media, in the order the
+    /// container lists each kind. Empty when the backend cannot list them.
+    pub tracks: Vec<Track>,
+    /// The audio track playing, as an index into the audio tracks.
+    /// `None` when there is no audio or the backend cannot tell.
+    pub audio_track: Option<usize>,
+    /// The text track shown, as an index into the text tracks; `None`
+    /// when subtitles inside the media are off (the default) or there are
+    /// none.
+    pub text_track: Option<usize>,
+}
+
+/// What kind of track a [`Track`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum TrackKind {
+    /// Sound: a language, a commentary, a description.
+    Audio,
+    /// Subtitles or captions carried inside the media.
+    Text,
+}
+
+/// An audio or text track inside the media, as the container labels it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Track {
+    /// Audio or text.
+    pub kind: TrackKind,
+    /// Its place among the tracks of its kind, from 0: what
+    /// [`VideoPlayer::select_audio_track`](crate::VideoPlayer::select_audio_track)
+    /// and
+    /// [`VideoPlayer::select_text_track`](crate::VideoPlayer::select_text_track)
+    /// take.
+    pub index: usize,
+    /// The language as the media states it (usually an ISO 639 code such
+    /// as `en` or `fra`), when it does.
+    pub language: Option<String>,
+    /// The track's title, when the media gives one.
+    pub title: Option<String>,
+}
+
+impl Track {
+    /// A track with no language or title.
+    pub fn new(kind: TrackKind, index: usize) -> Self {
+        Self {
+            kind,
+            index,
+            language: None,
+            title: None,
+        }
+    }
+
+    /// The same track with this language.
+    pub fn with_language(mut self, language: impl Into<String>) -> Self {
+        self.language = Some(language.into());
+        self
+    }
+
+    /// The same track with this title.
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
 }
 
 /// A clockwise rotation in quarter turns.
