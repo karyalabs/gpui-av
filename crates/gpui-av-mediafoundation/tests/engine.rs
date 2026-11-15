@@ -21,7 +21,7 @@ mod windows_test {
     use std::time::{Duration, Instant};
 
     use gpui::{App, AppContext, AsyncApp, Entity};
-    use gpui_av::{Backend, ErrorKind, PlaybackState, PlayerEvent, Source, VideoPlayer};
+    use gpui_av::{Backend, ErrorKind, PlaybackState, PlayerEvent, Source, TrackKind, VideoPlayer};
     use gpui_av_mediafoundation::MediaFoundationBackend;
 
     struct Report {
@@ -191,6 +191,52 @@ mod windows_test {
             ),
             &state,
         );
+
+        // Two audio tracks to choose between.
+        let tracks = clip.with_file_name("h264-1280x720-tracks.mp4");
+        if tracks.exists() {
+            let player = cx.new(|cx| {
+                let mut player = VideoPlayer::with_backend(Source::file(&tracks), backend(), cx);
+                player.set_muted(true, cx);
+                player.play();
+                player
+            });
+            wait_for(
+                &player,
+                Duration::from_secs(10),
+                |state| matches!(state, PlaybackState::Playing | PlaybackState::Failed(_)),
+                cx,
+            )
+            .await;
+            let info = player.read_with(cx, |player, _| player.info().clone());
+            let languages: Vec<_> = info
+                .tracks
+                .iter()
+                .filter(|track| track.kind == TrackKind::Audio)
+                .map(|track| track.language.clone())
+                .collect();
+            report.check(
+                "two audio tracks are listed, the first on",
+                languages.len() == 2 && info.audio_track == Some(0),
+                (&info.tracks, info.audio_track),
+            );
+            player.update(cx, |player, _| player.select_audio_track(1));
+            let started = Instant::now();
+            let mut chosen = None;
+            while started.elapsed() < Duration::from_secs(5) {
+                chosen = player.read_with(cx, |player, _| player.info().audio_track);
+                if chosen == Some(1) {
+                    break;
+                }
+                wait(cx, 10).await;
+            }
+            report.check(
+                "the second audio track can be chosen",
+                chosen == Some(1),
+                chosen,
+            );
+            cx.update(|_| drop(player));
+        }
 
         // A file cut off inside its media data may play up to the cut, so
         // give it the clip's length to fail.
