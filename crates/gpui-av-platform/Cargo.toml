@@ -15,11 +15,13 @@ workspace = true
 # A backend that does not exist on the target being built is left out by
 # itself (each backend crate is empty there).
 [features]
-default = ["avfoundation", "gstreamer", "web"]
+default = ["avfoundation", "mediafoundation", "gstreamer", "web"]
 # AVFoundation, the first choice on macOS.
 avfoundation = ["dep:gpui-av-avfoundation"]
-# GStreamer, loaded at run time where installed: the default on Linux and
-# Windows, and on macOS the fallback for media AVFoundation will not open
+# Media Foundation's media engine, the first choice on Windows.
+mediafoundation = ["dep:gpui-av-mediafoundation"]
+# GStreamer, loaded at run time where installed: the default on Linux, on
+# Windows the fallback after Media Foundation, and on macOS the fallback for media AVFoundation will not open
 # (MKV, WebM).
 gstreamer = ["dep:gpui-av-gstreamer"]
 # The browser's own `<video>` element, in a wasm build.
@@ -32,6 +34,7 @@ karya-gpui = ["gpui-av-avfoundation?/karya-gpui"]
 gpui-av.workspace = true
 gpui.workspace = true
 gpui-av-avfoundation = { workspace = true, optional = true }
+gpui-av-mediafoundation = { workspace = true, optional = true }
 gpui-av-gstreamer = { workspace = true, optional = true }
 gpui-av-web = { workspace = true, optional = true }
 

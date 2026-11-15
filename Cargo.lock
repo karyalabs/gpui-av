@@ -2056,12 +2056,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui-av-mediafoundation"
+version = "0.0.0"
+dependencies = [
+ "async-channel",
+ "gpui-av",
+ "gpui-pre",
+ "gpui-pre-platform",
+ "image",
+ "smallvec",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+]
+
+[[package]]
 name = "gpui-av-platform"
 version = "0.0.0"
 dependencies = [
  "gpui-av",
  "gpui-av-avfoundation",
  "gpui-av-gstreamer",
+ "gpui-av-mediafoundation",
  "gpui-av-web",
  "gpui-pre",
 ]

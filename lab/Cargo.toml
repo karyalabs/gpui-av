@@ -35,9 +35,9 @@ serde_json.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 # The platform's own backends: AVFoundation then GStreamer on macOS,
-# GStreamer elsewhere. GStreamer loads at run time, so the lab builds and
+# Media Foundation then GStreamer on Windows, GStreamer elsewhere. GStreamer loads at run time, so the lab builds and
 # starts without it.
-gpui-av-platform = { workspace = true, features = ["avfoundation", "gstreamer"] }
+gpui-av-platform = { workspace = true, features = ["avfoundation", "mediafoundation", "gstreamer"] }
 cpu-time.workspace = true
 memory-stats.workspace = true
 

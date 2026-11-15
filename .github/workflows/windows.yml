@@ -1,0 +1,54 @@
+# The Windows backend on a real Windows machine. Not part of `ci`: it runs
+# only when the Windows backend changes, or by hand (Actions, "Windows",
+# "Run workflow"), and nothing waits for it to merge. It plays clips that
+# ffmpeg makes on the runner; no video is committed.
+name: Windows
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "crates/gpui-av-mediafoundation/**"
+      - ".github/workflows/windows.yml"
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: karyalabs/.github/actions/rust-toolchain@v1
+      - name: ffmpeg, for the test clips
+        run: choco install ffmpeg -y --no-progress
+      - name: Make the tier A clips
+        shell: bash
+        run: scripts/make-clips.sh clips
+      - name: The backend without a window
+        shell: bash
+        env:
+          GPUI_AV_TEST_CLIP: clips/h264-1280x720.mp4
+        run: cargo test --locked -p gpui-av-mediafoundation -p gpui-av-platform
+      - name: The lab's bench, in a window
+        # A hosted runner's desktop may not give GPUI a window; the result
+        # is kept either way.
+        continue-on-error: true
+        shell: bash
+        run: |
+          cargo run --locked --release -p gpui-av-lab -- \
+            --bench corpus/tier-a.json --clips clips --backend mediafoundation --out bench-windows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-windows
+          path: bench-windows.json
+          if-no-files-found: ignore

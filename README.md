@@ -1,7 +1,8 @@
 # gpui-av
 
 Video playback for [GPUI](https://www.gpui.rs) apps, using each platform's own
-decoders: AVFoundation on macOS, GStreamer on Linux, and the browser on the web.
+decoders: AVFoundation on macOS, Media Foundation on Windows, GStreamer on
+Linux, and the browser on the web.
 
 A Karya Labs community project; not part of or endorsed by Zed.
 
@@ -27,7 +28,7 @@ video(&player).object_fit(ObjectFit::Contain).size_full()
 
 `gpui-av-platform` uses AVFoundation on macOS and falls back to GStreamer
 (where installed) for media AVFoundation will not open, such as MKV;
-GStreamer on Linux and Windows; and the browser on the web. Each backend is
+Media Foundation on Windows, then GStreamer; GStreamer on Linux; and the browser on the web. Each backend is
 a cargo feature. To choose your own order, or add a backend of your own,
 build a `gpui_av::Fallback` and pass it to `gpui_av::set_default_backend`.
 
@@ -61,6 +62,8 @@ Part of [Karya Labs](https://github.com/karyalabs), alongside
 - `crates/gpui-av-gstreamer`: the Linux backend (GStreamer, loaded at run
   time). It also builds for macOS and Windows, where it is used if
   GStreamer is installed; it has not been played there yet.
+- `crates/gpui-av-mediafoundation`: the Windows backend (Media
+  Foundation's media engine).
 - `crates/gpui-av-platform`: picks the platform's backends in one call.
 - `lab/`: `gpui-av-lab`, the playground. `cargo run -p gpui-av-lab -- clips/`
   plays a folder; with no arguments it plays built-in test patterns.
