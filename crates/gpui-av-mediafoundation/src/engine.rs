@@ -478,6 +478,24 @@ impl Inner {
             audio.push((stream, track));
         }
         self.audio = audio;
+        if trace() {
+            for stream in 0..count {
+                eprintln!(
+                    "mediafoundation: stream {stream} major type {:?}",
+                    stream_guid(streams, stream, &MF_MT_MAJOR_TYPE)
+                );
+            }
+            if let Some(timed) = &self.timed {
+                // SAFETY: timed text queries on the main thread.
+                let (in_band, listed) = unsafe {
+                    (
+                        timed.IsInBandEnabled().as_bool(),
+                        timed.GetTextTracks().map(|list| list.GetLength()).ok(),
+                    )
+                };
+                eprintln!("mediafoundation: timed text in band {in_band}, tracks {listed:?}");
+            }
+        }
     }
 
     /// Lists the text tracks inside the media.
