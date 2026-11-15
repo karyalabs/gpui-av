@@ -28,7 +28,8 @@ use windows::Win32::Media::MediaFoundation::{
     MF_MEDIA_ENGINE_EVENT_PAUSE, MF_MEDIA_ENGINE_EVENT_PLAYING, MF_MEDIA_ENGINE_EVENT_SEEKED,
     MF_MEDIA_ENGINE_EVENT_TIMEUPDATE, MF_MEDIA_ENGINE_EVENT_WAITING, MF_MEDIA_ENGINE_TIMEDTEXT,
     MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT, MF_MT_MAJOR_TYPE, MF_SD_LANGUAGE, MF_SD_STREAM_NAME,
-    MF_VERSION, MFCreateAttributes, MFMediaType_Audio, MFSTARTUP_FULL, MFStartup,
+    MF_TIMED_TEXT_TRACK_KIND_METADATA, MF_VERSION, MFCreateAttributes, MFMediaType_Audio,
+    MFSTARTUP_FULL, MFStartup,
 };
 use windows::Win32::System::Com::StructuredStorage::{PROPVARIANT, PropVariantClear};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
@@ -181,6 +182,9 @@ struct Inner {
     text: Vec<(u32, Track)>,
     /// The text track on, by index into `text`.
     text_on: Option<usize>,
+    /// The text track the app chose, kept for tracks the engine lists
+    /// late: in-band text tracks can appear after the metadata loads.
+    text_wanted: Option<usize>,
     /// A text choice made before the metadata loaded.
     pending_text: Option<Option<usize>>,
 }
@@ -284,6 +288,7 @@ impl MfSession {
             timed,
             text: Vec::new(),
             text_on: None,
+            text_wanted: None,
             pending_text: None,
         }));
         inner.borrow().sink.state(PlaybackState::Loading);
@@ -342,11 +347,13 @@ impl Inner {
                 self.report_info();
             }
         } else if kind == MF_MEDIA_ENGINE_EVENT_CANPLAY.0 {
+            self.find_late_text_tracks();
             // SAFETY: plain engine queries on the main thread.
             if unsafe { self.engine.IsPaused() }.as_bool() {
                 self.sink.state(PlaybackState::Ready);
             }
         } else if kind == MF_MEDIA_ENGINE_EVENT_PLAYING.0 {
+            self.find_late_text_tracks();
             self.sink.state(PlaybackState::Playing);
         } else if kind == MF_MEDIA_ENGINE_EVENT_WAITING.0 {
             self.sink.state(PlaybackState::Buffering);
@@ -357,6 +364,7 @@ impl Inner {
                 self.sink.state(PlaybackState::Paused);
             }
         } else if kind == MF_MEDIA_ENGINE_EVENT_TIMEUPDATE.0 {
+            self.find_late_text_tracks();
             // A file cut off inside its media data can also leave the
             // engine playing nothing with its clock running on past the
             // stated length, with no end and no error (seen on Windows
@@ -484,6 +492,7 @@ impl Inner {
             };
             (0..list.GetLength())
                 .filter_map(|index| list.GetTrack(index).ok())
+                .filter(|track| track.GetTrackKind() != MF_TIMED_TEXT_TRACK_KIND_METADATA)
                 .enumerate()
                 .map(|(index, track)| {
                     let mut entry = Track::new(TrackKind::Text, index);
@@ -500,8 +509,26 @@ impl Inner {
         self.text = tracks;
     }
 
+    /// Lists text tracks the engine added after the metadata loaded, and
+    /// reports them.
+    fn find_late_text_tracks(&mut self) {
+        if !self.loaded || !self.text.is_empty() || self.timed.is_none() {
+            return;
+        }
+        self.read_text_tracks();
+        if !self.text.is_empty() {
+            log(&format!(
+                "{} text tracks listed after the metadata",
+                self.text.len()
+            ));
+            self.select_text(self.text_wanted);
+            self.report_info();
+        }
+    }
+
     /// Turns on the text track at `index`, or every one off for `None`.
     fn select_text(&mut self, index: Option<usize>) {
+        self.text_wanted = index;
         let Some(timed) = &self.timed else {
             return;
         };
