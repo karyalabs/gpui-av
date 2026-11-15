@@ -5,6 +5,7 @@ mod info;
 mod loader;
 mod probe;
 mod session;
+mod tracks;
 
 use std::path::Path;
 

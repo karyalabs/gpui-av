@@ -468,6 +468,7 @@ fn problems(
             ("rotation", checks.rotation),
             ("duration", checks.duration),
             ("tracks", checks.tracks),
+            ("audio and text tracks", checks.track_list),
             ("colour range", checks.color_range),
             ("colour matrix", checks.color_matrix),
             ("transfer function", checks.color_transfer),

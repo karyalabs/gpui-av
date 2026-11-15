@@ -142,6 +142,24 @@
       "expect": "plays"
     },
     {
+      "file": "h264-1280x720-tracks.mp4",
+      "container": "mp4",
+      "video_codec": "h264",
+      "audio_codec": "aac",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "duration": 10,
+      "rotation": 0,
+      "color_range": "limited",
+      "color_matrix": "bt709",
+      "color_transfer": "sdr",
+      "audio_tracks": 2,
+      "text_tracks": 1,
+      "expect": "plays",
+      "note": "Two audio tracks (eng, and fra titled Commentary) and one text track (eng, mov_text) to choose between."
+    },
+    {
       "file": "aac-audio-only.m4a",
       "container": "mp4",
       "video_codec": null,
