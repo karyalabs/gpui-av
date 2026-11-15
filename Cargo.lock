@@ -2080,6 +2080,7 @@ dependencies = [
  "gpui-av-mediafoundation",
  "gpui-av-web",
  "gpui-pre",
+ "gpui-pre-platform",
 ]
 
 [[package]]

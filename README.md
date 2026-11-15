@@ -6,7 +6,7 @@ Linux, and the browser on the web.
 
 A Karya Labs community project; not part of or endorsed by Zed.
 
-**Status: early, shipping continuously.** Video plays on macOS, Linux and
+**Status: early, shipping continuously.** Video plays on macOS, Linux, Windows and
 in Chrome through one API; nothing is published to crates.io yet. The plan,
 the roadmap (section 5.3) and the experiments behind it are in
 [docs/spec.md](docs/spec.md).
@@ -26,10 +26,20 @@ player.update(cx, |player, _| player.play());
 video(&player).object_fit(ObjectFit::Contain).size_full()
 ```
 
-`gpui-av-platform` uses AVFoundation on macOS and falls back to GStreamer
-(where installed) for media AVFoundation will not open, such as MKV;
-Media Foundation on Windows, then GStreamer; GStreamer on Linux; and the browser on the web. Each backend is
-a cargo feature. To choose your own order, or add a backend of your own,
+A whole app that plays a file or a URL is
+[`crates/gpui-av-platform/examples/play.rs`](crates/gpui-av-platform/examples/play.rs)
+(about 80 lines):
+
+```sh
+cargo run -p gpui-av-platform --example play -- film.mkv
+```
+
+`gpui-av-platform` uses AVFoundation on macOS, Media Foundation on Windows,
+GStreamer on Linux and the browser on the web, each falling back to
+GStreamer (where installed) for media the first will not play. Matroska
+and WebM, which AVFoundation and some browsers do not open, are remuxed to
+MP4 as they play (`gpui-av-remux`, nothing is decoded) so the platform's
+own decoders still play them. Each backend is a cargo feature. To choose your own order, or add a backend of your own,
 build a `gpui_av::Fallback` and pass it to `gpui_av::set_default_backend`.
 
 ## Try it
@@ -64,7 +74,10 @@ Part of [Karya Labs](https://github.com/karyalabs), alongside
   GStreamer is installed; it has not been played there yet.
 - `crates/gpui-av-mediafoundation`: the Windows backend (Media
   Foundation's media engine).
-- `crates/gpui-av-platform`: picks the platform's backends in one call.
+- `crates/gpui-av-platform`: picks the platform's backends in one call;
+  its `play` example is the quick start.
+- `crates/gpui-av-remux`: Matroska and WebM to fragmented MP4 (and HLS),
+  in pure Rust, for AVFoundation and browsers.
 - `lab/`: `gpui-av-lab`, the playground. `cargo run -p gpui-av-lab -- clips/`
   plays a folder; with no arguments it plays built-in test patterns.
 - `scripts/`: the web build and its server (`web`, `serve.py`), the clip
