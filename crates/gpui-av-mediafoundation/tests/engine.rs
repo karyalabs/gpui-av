@@ -192,6 +192,51 @@ mod windows_test {
             &state,
         );
 
+        // A file cut off inside its media data may play up to the cut, so
+        // give it the clip's length to fail.
+        let truncated = clip.with_file_name("broken-truncated.mp4");
+        if truncated.exists() {
+            let player = cx.new(|cx| {
+                let mut player = VideoPlayer::with_backend(Source::file(&truncated), backend(), cx);
+                player.set_muted(true, cx);
+                player.play();
+                player
+            });
+            let state = wait_for(
+                &player,
+                Duration::from_secs(30),
+                |state| matches!(state, PlaybackState::Failed(_) | PlaybackState::Ended),
+                cx,
+            )
+            .await;
+            report.check(
+                "a truncated file: Decode",
+                failure_kind(&state) == Some(ErrorKind::Decode),
+                &state,
+            );
+        }
+
+        // Hosted runners have no sound device, so this one is reported, not
+        // checked.
+        let audio_only = clip.with_file_name("aac-audio-only.m4a");
+        if audio_only.exists() {
+            let player = cx.new(|cx| {
+                let mut player =
+                    VideoPlayer::with_backend(Source::file(&audio_only), backend(), cx);
+                player.set_muted(true, cx);
+                player.play();
+                player
+            });
+            let state = wait_for(
+                &player,
+                Duration::from_secs(10),
+                |state| matches!(state, PlaybackState::Playing | PlaybackState::Failed(_)),
+                cx,
+            )
+            .await;
+            println!("info an audio-only file: {state:?}");
+        }
+
         let with_header = Source::url("https://example.test/clip.mp4").header("Authorization", "x");
         let player = cx.new(|cx| VideoPlayer::with_backend(with_header, backend(), cx));
         let state = player.read_with(cx, |player, _| player.state().clone());

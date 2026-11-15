@@ -223,6 +223,14 @@ impl Inner {
             return;
         }
         let kind = event.event as i32;
+        if trace() {
+            // SAFETY: a plain engine query on the main thread.
+            let position = unsafe { self.engine.GetCurrentTime() };
+            eprintln!(
+                "mediafoundation: event {kind} ({}, {:#x}) at {position:.3} s",
+                event.param1, event.param2
+            );
+        }
         if kind == MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA.0 {
             self.loaded = true;
             self.report_info();
@@ -251,7 +259,23 @@ impl Inner {
                 self.sink.state(PlaybackState::Paused);
             }
         } else if kind == MF_MEDIA_ENGINE_EVENT_ENDED.0 {
-            self.sink.state(PlaybackState::Ended);
+            // A file cut off inside its media data ends where the data
+            // stops, with no error; its header still states the full
+            // length. Ending well short of it is a broken file, not an end.
+            // SAFETY: plain engine queries on the main thread.
+            let (position, length) =
+                unsafe { (self.engine.GetCurrentTime(), self.engine.GetDuration()) };
+            if length.is_finite() && length - position > EARLY_END_SECONDS {
+                self.failed = true;
+                self.sink.fail(Error::new(
+                    ErrorKind::Decode,
+                    format!(
+                        "the media stopped at {position:.1} s, before its stated length of {length:.1} s"
+                    ),
+                ));
+            } else {
+                self.sink.state(PlaybackState::Ended);
+            }
         } else if kind == MF_MEDIA_ENGINE_EVENT_SEEKED.0 {
             // SAFETY: as above.
             let position = seconds(unsafe { self.engine.GetCurrentTime() }).unwrap_or_default();
@@ -398,6 +422,17 @@ impl Inner {
 }
 
 /// Maps the engine's error code, and the HRESULT behind it, to a kind.
+/// How far short of its stated length a file may end before it counts as
+/// cut off. Stated lengths and the last frame disagree by a frame or two.
+const EARLY_END_SECONDS: f64 = 1.0;
+
+/// Whether to print each engine event, for finding out what the engine does
+/// with a file (`GPUI_AV_MEDIAFOUNDATION_TRACE=1`).
+fn trace() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var_os("GPUI_AV_MEDIAFOUNDATION_TRACE").is_some())
+}
+
 fn error(code: usize, hresult: HRESULT) -> Error {
     const FILE_NOT_FOUND: u32 = 0x8007_0002;
     const PATH_NOT_FOUND: u32 = 0x8007_0003;

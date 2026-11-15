@@ -38,6 +38,7 @@ jobs:
         env:
           # cargo runs each test in its crate folder, so the path must be absolute.
           GPUI_AV_TEST_CLIP: ${{ github.workspace }}/clips/h264-1280x720.mp4
+          GPUI_AV_MEDIAFOUNDATION_TRACE: 1
         run: cargo test --locked -p gpui-av-mediafoundation -p gpui-av-platform
       - name: The lab's bench, in a window
         # A hosted runner's desktop may not give GPUI a window; the result
