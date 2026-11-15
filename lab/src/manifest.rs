@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use gpui_av::{ColorMatrix, ColorRange, MediaInfo, TransferFunction};
+use gpui_av::{ColorMatrix, ColorRange, MediaInfo, TrackKind, TransferFunction};
 use serde::{Deserialize, Serialize};
 
 /// A corpus: a list of clips with their expected properties.
@@ -61,6 +61,12 @@ pub struct Expected {
     /// `"sdr"`, `"pq"` or `"hlg"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color_transfer: Option<String>,
+    /// How many audio tracks a backend that lists tracks must list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_tracks: Option<usize>,
+    /// How many text tracks a backend that lists tracks must list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_tracks: Option<usize>,
     /// How long the bench plays this clip, when not the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub play_seconds: Option<f64>,
@@ -96,6 +102,9 @@ pub struct Checks {
     pub duration: Option<bool>,
     /// Which of video and audio the media has.
     pub tracks: Option<bool>,
+    /// How many audio and text tracks are listed. Unknown when the backend
+    /// lists none at all, as backends that cannot list tracks do.
+    pub track_list: Option<bool>,
     /// The colour range.
     pub color_range: Option<bool>,
     /// The colour matrix.
@@ -179,10 +188,30 @@ impl Expected {
             } else {
                 Some(false)
             },
+            track_list: self.check_track_list(info),
             color_range: range,
             color_matrix: matrix,
             color_transfer: transfer,
         }
+    }
+
+    fn check_track_list(&self, info: &MediaInfo) -> Option<bool> {
+        if self.audio_tracks.is_none() && self.text_tracks.is_none() || info.tracks.is_empty() {
+            return None;
+        }
+        let count = |kind| {
+            info.tracks
+                .iter()
+                .filter(|track| track.kind == kind)
+                .count()
+        };
+        Some(
+            self.audio_tracks
+                .is_none_or(|expected| count(TrackKind::Audio) == expected)
+                && self
+                    .text_tracks
+                    .is_none_or(|expected| count(TrackKind::Text) == expected),
+        )
     }
 }
 
@@ -246,6 +275,7 @@ mod tests {
                 rotation: Some(true),
                 duration: Some(true),
                 tracks: Some(true),
+                track_list: None,
                 color_range: Some(true),
                 color_matrix: Some(true),
                 color_transfer: Some(true),
@@ -273,6 +303,7 @@ mod tests {
                 rotation: Some(false),
                 duration: Some(false),
                 tracks: Some(false),
+                track_list: None,
                 color_range: None,
                 color_matrix: None,
                 color_transfer: None,

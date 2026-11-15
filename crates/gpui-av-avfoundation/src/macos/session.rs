@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use block2::RcBlock;
-use gpui::{App, Task, Window};
-use gpui_av::{EventSink, Placement, PlaybackState, Rotation, Session, Stats};
+use gpui::{App, SharedString, Task, Window};
+use gpui_av::{EventSink, Placement, PlaybackState, Rotation, Session, Stats, TrackKind};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, ProtocolObject};
 use objc2::{AnyThread, MainThreadMarker};
@@ -39,6 +39,7 @@ use super::errors;
 use super::info::{self, Loaded};
 use super::loader::Loader;
 use super::probe::{self, HttpSource};
+use super::tracks::{Groups, Legible};
 
 /// How often the session checks the player for state changes. AVFoundation
 /// reports most of them through key-value observing, which needs an
@@ -114,6 +115,12 @@ struct Inner {
     /// Waiting for a new picture since then.
     awaiting_frame: Option<Instant>,
     stats: Stats,
+    /// The media's audio and text groups, once loaded.
+    groups: Option<Groups>,
+    /// Track choices made before the media loaded.
+    pending_tracks: Vec<(TrackKind, Option<usize>)>,
+    /// Subtitle text inside the media.
+    legible: Legible,
 }
 
 impl AvSession {
@@ -143,6 +150,7 @@ impl AvSession {
             }
             (player, item, output)
         };
+        let legible = Legible::attach(&item);
         let notes = Rc::new(Notes::default());
         let inner = Rc::new(RefCell::new(Inner {
             player,
@@ -166,6 +174,9 @@ impl AvSession {
             max_drift: None,
             awaiting_frame: Some(Instant::now()),
             stats: Stats::default(),
+            groups: None,
+            pending_tracks: Vec::new(),
+            legible,
         }));
         let observers = observe(&inner, &notes);
         let weak = Rc::downgrade(&inner);
@@ -431,11 +442,49 @@ impl Inner {
                 self.item.setVideoComposition(Some(&composition));
             }
         }
+        let groups = Groups::read(&self.item);
+        // Subtitles inside the media start off, as on every backend;
+        // AVPlayer would otherwise pick some by the system's settings.
+        groups.select(&self.item, TrackKind::Text, None);
+        for (kind, index) in std::mem::take(&mut self.pending_tracks) {
+            groups.select(&self.item, kind, index);
+        }
+        let mut loaded = loaded;
+        loaded.info.tracks = groups.tracks();
+        self.groups = Some(groups);
+        self.refresh_tracks(&mut loaded.info);
         self.events.info(loaded.info.clone());
         self.loaded = Some(loaded);
         if let Some(position) = self.pending_seek.take() {
             self.seek_to(position, true);
         }
+    }
+
+    /// Reads which audio and text tracks are on into `info`.
+    fn refresh_tracks(&self, info: &mut gpui_av::MediaInfo) {
+        if let Some(groups) = &self.groups {
+            info.audio_track = groups.selected(&self.item, TrackKind::Audio);
+            info.text_track = groups.selected(&self.item, TrackKind::Text);
+        }
+    }
+
+    fn select_track(&mut self, kind: TrackKind, index: Option<usize>) {
+        let Some(groups) = &self.groups else {
+            self.pending_tracks.push((kind, index));
+            return;
+        };
+        groups.select(&self.item, kind, index);
+        if kind == TrackKind::Text {
+            self.legible.clear();
+        }
+        let Some(mut info) = self.loaded.as_ref().map(|loaded| loaded.info.clone()) else {
+            return;
+        };
+        self.refresh_tracks(&mut info);
+        if let Some(loaded) = &mut self.loaded {
+            loaded.info = info.clone();
+        }
+        self.events.info(info);
     }
 
     fn on_end(&mut self) {
@@ -626,6 +675,7 @@ impl Session for AvSession {
     fn seek(&mut self, position: Duration) {
         let mut inner = self.inner.borrow_mut();
         inner.ended = false;
+        inner.legible.clear();
         if inner.loaded.is_none() {
             inner.pending_seek = Some(position);
         } else {
@@ -677,6 +727,16 @@ impl Session for AvSession {
             .collect()
     }
 
+    fn select_track(&mut self, kind: TrackKind, index: Option<usize>) {
+        self.inner.borrow_mut().select_track(kind, index);
+    }
+
+    fn text(&self) -> Option<SharedString> {
+        let inner = self.inner.borrow();
+        inner.loaded.as_ref()?.info.text_track?;
+        inner.legible.text().map(SharedString::from)
+    }
+
     fn stats(&self) -> Stats {
         let inner = self.inner.borrow();
         match inner.max_drift {
@@ -715,6 +775,7 @@ impl Drop for AvSession {
         unsafe {
             inner.player.pause();
             inner.item.removeOutput(&inner.output);
+            inner.legible.detach(&inner.item);
             inner.player.replaceCurrentItemWithPlayerItem(None);
         }
     }

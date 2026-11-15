@@ -75,6 +75,19 @@ fi
 "${FF[@]}" $(picture 1280x720 30) -t 10 "${H264[@]}" "${BT709[@]}" \
   -movflags +faststart "$OUT/h264-1280x720-noaudio.mp4"
 
+# Tracks to choose between: two audio tracks (the second a little higher,
+# so a switch can be heard) and English subtitles as mov_text.
+printf '1\n00:00:01,000 --> 00:00:04,000\nThe first line\n\n2\n00:00:05,000 --> 00:00:08,000\nThe second line\n' \
+  > "$OUT/tracks.srt"
+# shellcheck disable=SC2046
+"${FF[@]}" $(picture 1280x720 30) "${TONE[@]}" -f lavfi -i "sine=frequency=660" \
+  -i "$OUT/tracks.srt" -t 10 -map 0:v -map 1:a -map 2:a -map 3:s \
+  "${AUDIO[@]}" "${H264[@]}" "${BT709[@]}" -c:s mov_text \
+  -metadata:s:a:0 language=eng -metadata:s:a:1 language=fra \
+  -metadata:s:a:1 title=Commentary -metadata:s:s:0 language=eng \
+  -movflags +faststart "$OUT/h264-1280x720-tracks.mp4"
+rm "$OUT/tracks.srt"
+
 # Audio only.
 "${FF[@]}" "${TONE[@]}" -t 10 "${AUDIO[@]}" -movflags +faststart "$OUT/aac-audio-only.m4a"
 
