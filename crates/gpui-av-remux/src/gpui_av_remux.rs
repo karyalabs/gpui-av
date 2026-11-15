@@ -23,12 +23,14 @@
 
 mod matroska;
 mod mp4;
+mod ranges;
 #[cfg(not(target_arch = "wasm32"))]
 mod serve;
 mod sparse;
 
+pub use ranges::{Fetched, RangeReader, RangeSource};
 #[cfg(not(target_arch = "wasm32"))]
-pub use serve::HlsServer;
+pub use serve::{Failure, FailureKind, HlsServer, Summary};
 pub use sparse::{SparseFile, SparseReader};
 
 use std::fmt;

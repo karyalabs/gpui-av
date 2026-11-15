@@ -144,7 +144,16 @@ Matroska), with the Mac check.
   `.mkv` and `.webm` files through it; AVAssetResourceLoader does not serve
   HLS media segments, so a real server it is). Waiting on the Mac check:
   tier B on AVFoundation, and whether HLS takes Opus and refuses VP9
-  cleanly so the fallback moves on. Matroska over HTTP needs a reader with
-  range requests, later.
+  cleanly so the fallback moves on.
+- macOS over HTTP: done in code. A URL whose path ends in `.mkv` or
+  `.webm` (Jellyfin's direct play URLs do) is read through a
+  `RangeReader` (requests that double from 256 KB to 8 MB while reads run
+  on, last 8 kept) over `NSURLSession` range requests with the source's
+  headers. `HlsServer::open_in_background` reads the header on its own
+  thread so the main thread never waits on the network, and keeps why it
+  failed (`HlsServer::failure`) for the session to report instead of
+  AVFoundation's view of a 502. Checked in the sandbox with an in-memory
+  range source: output byte-identical to reading the file. The
+  `NSURLSession` part waits on the Mac check.
 - Web: done (step 3). Safari and Firefox runs with the Mac check.
 - Spec: E7's answer is folded into section 5 and S7.

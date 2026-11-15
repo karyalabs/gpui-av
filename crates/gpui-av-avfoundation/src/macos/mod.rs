@@ -4,6 +4,7 @@ mod errors;
 mod info;
 mod loader;
 mod probe;
+mod remote;
 mod session;
 mod tracks;
 
@@ -31,7 +32,9 @@ use objc2_foundation::{NSString, NSURL};
 /// AVFoundation opens no Matroska or WebM. A file in either is remuxed to
 /// fragmented MP4 as it plays (`gpui-av-remux`, nothing is decoded) and
 /// served to AVFoundation as HLS from `127.0.0.1`, so its own decoders
-/// still play it. Matroska and WebM over HTTP are not remuxed yet.
+/// still play it. A URL whose path ends in `.mkv` or `.webm` (as
+/// Jellyfin's direct play URLs do) is remuxed the same way, read with range
+/// requests that carry the source's headers; the server must take ranges.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AvFoundationBackend;
 
@@ -65,7 +68,7 @@ impl Backend for AvFoundationBackend {
         })?;
         let (asset, loader, remuxed) = match remuxed(&source)? {
             Some(remuxed) => {
-                let url = web_url(remuxed.server.url())?;
+                let url = web_url(remuxed.url())?;
                 // SAFETY: `url` is a valid NSURL, and there are no options.
                 let asset =
                     unsafe { AVURLAsset::initWithURL_options(AVURLAsset::alloc(), &url, None) };
@@ -86,8 +89,29 @@ impl Backend for AvFoundationBackend {
     }
 }
 
-/// For a file that is Matroska or WebM, its remuxer serving it as HLS.
-fn remuxed(source: &Source) -> Result<Option<session::Remuxed>, Error> {
+/// For a file that is Matroska or WebM, or a URL named like one, its
+/// remuxer serving it as HLS.
+fn remuxed(source: &Source) -> Result<Option<gpui_av_remux::HlsServer>, Error> {
+    if let Some(url) = source.as_url() {
+        if !names_matroska(url) {
+            return Ok(None);
+        }
+        let ranges = remote::UrlRanges {
+            url: url.to_string(),
+            headers: source.headers().to_vec(),
+        };
+        // Reading the header takes a few requests: not on the main thread.
+        let server = gpui_av_remux::HlsServer::open_in_background(move || {
+            gpui_av_remux::Remuxer::open(gpui_av_remux::RangeReader::new(ranges))
+        })
+        .map_err(|error| {
+            Error::new(
+                ErrorKind::Other,
+                format!("cannot start the local server for {url}: {error}"),
+            )
+        })?;
+        return Ok(Some(server));
+    }
     let Some(path) = source.path() else {
         return Ok(None);
     };
@@ -113,15 +137,6 @@ fn remuxed(source: &Source) -> Result<Option<session::Remuxed>, Error> {
         };
         Error::new(kind, error.to_string())
     })?;
-    let hint = gpui_av::MediaInfo {
-        duration: Some(remuxer.duration()),
-        natural_size: remuxer
-            .video_size()
-            .map(|(width, height)| gpui::size(width, height)),
-        has_video: remuxer.video_size().is_some(),
-        has_audio: Some(remuxer.has_audio()),
-        ..Default::default()
-    };
     let server = gpui_av_remux::HlsServer::start(remuxer).map_err(|error| {
         Error::new(
             ErrorKind::Other,
@@ -131,7 +146,31 @@ fn remuxed(source: &Source) -> Result<Option<session::Remuxed>, Error> {
             ),
         )
     })?;
-    Ok(Some(session::Remuxed { server, hint }))
+    Ok(Some(server))
+}
+
+/// Whether a URL's path ends in `.mkv` or `.webm`.
+fn names_matroska(url: &str) -> bool {
+    let path = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .to_ascii_lowercase();
+    path.ends_with(".mkv") || path.ends_with(".webm")
+}
+
+/// The error for a remuxed source that could not be served.
+fn remux_failure(failure: gpui_av_remux::Failure) -> Error {
+    use gpui_av_remux::FailureKind;
+    let kind = match failure.kind {
+        FailureKind::Unsupported => ErrorKind::Unsupported,
+        FailureKind::Damaged => ErrorKind::Decode,
+        FailureKind::Io(std::io::ErrorKind::NotFound) => ErrorKind::NotFound,
+        FailureKind::Io(std::io::ErrorKind::PermissionDenied) => ErrorKind::Unauthorized,
+        FailureKind::Io(std::io::ErrorKind::Unsupported) => ErrorKind::Unsupported,
+        _ => ErrorKind::Network,
+    };
+    Error::new(kind, failure.message)
 }
 
 /// The `AVURLAsset` for a source. A URL with request headers loads through

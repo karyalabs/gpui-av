@@ -8,15 +8,108 @@ use std::hash::{BuildHasher, Hasher};
 use std::io::{self, BufRead, BufReader, Read, Seek, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crate::Remuxer;
+use crate::{RemuxError, Remuxer};
 
 /// A request that has not sent its headers by then is dropped, so a stuck
 /// client cannot hold a thread.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a request waits for a file opened in the background.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// What the server knows of its file once it is open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Summary {
+    /// The file's length in time.
+    pub duration: Duration,
+    /// The video's coded size, if there is video.
+    pub video_size: Option<(u32, u32)>,
+    /// Whether there is sound.
+    pub has_audio: bool,
+}
+
+/// Why the server could not serve its file: opening it failed, or making
+/// a segment did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Failure {
+    /// What kind of failure.
+    pub kind: FailureKind,
+    /// What went wrong, for a person.
+    pub message: String,
+}
+
+/// The kind of a [`Failure`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FailureKind {
+    /// Not Matroska or WebM, or something MP4 cannot carry.
+    Unsupported,
+    /// The file is damaged.
+    Damaged,
+    /// Reading the file failed, with the reader's error kind (a
+    /// [`RangeSource`](crate::RangeSource) reports HTTP statuses as
+    /// `NotFound` and `PermissionDenied`).
+    Io(io::ErrorKind),
+}
+
+impl From<&RemuxError> for Failure {
+    fn from(error: &RemuxError) -> Self {
+        let kind = match error {
+            RemuxError::Invalid(_) => FailureKind::Damaged,
+            RemuxError::Io(error) => FailureKind::Io(error.kind()),
+            _ => FailureKind::Unsupported,
+        };
+        Self {
+            kind,
+            message: error.to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum Status {
+    Opening,
+    Ready(Summary),
+    Failed(Failure),
+}
+
+/// The status, and a signal for requests waiting on it.
+#[derive(Default)]
+struct Watched {
+    status: Mutex<Option<Status>>,
+    changed: Condvar,
+}
+
+impl Watched {
+    fn set(&self, status: Status) {
+        if let Ok(mut current) = self.status.lock() {
+            // A failure stays: a later request must not hide it.
+            if !matches!(*current, Some(Status::Failed(_))) {
+                *current = Some(status);
+            }
+        }
+        self.changed.notify_all();
+    }
+
+    fn get(&self) -> Option<Status> {
+        self.status.lock().ok().and_then(|status| status.clone())
+    }
+
+    /// Waits while the file opens.
+    fn wait(&self) -> Option<Status> {
+        let status = self.status.lock().ok()?;
+        let (status, _) = self
+            .changed
+            .wait_timeout_while(status, OPEN_TIMEOUT, |status| {
+                matches!(status, Some(Status::Opening) | None)
+            })
+            .ok()?;
+        status.clone()
+    }
+}
 
 /// Serves a [`Remuxer`]'s playlist, init segment and media segments on
 /// `127.0.0.1` until dropped.
@@ -28,41 +121,116 @@ pub struct HlsServer {
     address: SocketAddr,
     stop: Arc<AtomicBool>,
     accept: Option<JoinHandle<()>>,
+    watched: Arc<Watched>,
 }
 
 struct Shared<R> {
-    remuxer: Mutex<Remuxer<R>>,
-    playlist: String,
-    init: Vec<u8>,
+    parts: Mutex<Option<Parts<R>>>,
+    watched: Arc<Watched>,
     prefix: String,
-    media_type: &'static str,
     /// Set when the server is dropped: open connections close after their
     /// current request, so the file is not held open.
     stop: Arc<AtomicBool>,
 }
 
+/// What is served, once the file is open.
+struct Parts<R> {
+    remuxer: Remuxer<R>,
+    playlist: String,
+    init: Vec<u8>,
+    media_type: &'static str,
+}
+
+impl<R: Read + Seek> Parts<R> {
+    fn new(remuxer: Remuxer<R>) -> (Self, Summary) {
+        let summary = Summary {
+            duration: remuxer.duration(),
+            video_size: remuxer.video_size(),
+            has_audio: remuxer.has_audio(),
+        };
+        let parts = Self {
+            playlist: remuxer.hls_playlist("init.mp4", |index| format!("{index}.m4s")),
+            init: remuxer.init_segment(),
+            media_type: if summary.video_size.is_some() {
+                "video/mp4"
+            } else {
+                "audio/mp4"
+            },
+            remuxer,
+        };
+        (parts, summary)
+    }
+}
+
 impl HlsServer {
-    /// Starts serving on a free port of the loopback interface.
+    /// Starts serving an open file on a free port of the loopback
+    /// interface.
     pub fn start<R: Read + Seek + Send + 'static>(remuxer: Remuxer<R>) -> io::Result<Self> {
+        let (parts, summary) = Parts::new(remuxer);
+        let (server, shared) = Self::listen(Some(parts))?;
+        shared.watched.set(Status::Ready(summary));
+        Ok(server)
+    }
+
+    /// Starts serving at once and opens the file on a background thread
+    /// with `open`, for a file whose reads block (a URL). Requests wait
+    /// for it; a failure is kept for [`HlsServer::failure`].
+    pub fn open_in_background<R, F>(open: F) -> io::Result<Self>
+    where
+        R: Read + Seek + Send + 'static,
+        F: FnOnce() -> Result<Remuxer<R>, RemuxError> + Send + 'static,
+    {
+        let (server, shared) = Self::listen::<R>(None)?;
+        shared.watched.set(Status::Opening);
+        thread::Builder::new()
+            .name("gpui-av-hls-open".into())
+            .spawn(move || match open() {
+                Ok(remuxer) => {
+                    let (parts, summary) = Parts::new(remuxer);
+                    if let Ok(mut slot) = shared.parts.lock() {
+                        *slot = Some(parts);
+                    }
+                    shared.watched.set(Status::Ready(summary));
+                }
+                Err(error) => shared.watched.set(Status::Failed(Failure::from(&error))),
+            })?;
+        Ok(server)
+    }
+
+    /// What the file holds, once it is open.
+    pub fn summary(&self) -> Option<Summary> {
+        match self.watched.get()? {
+            Status::Ready(summary) => Some(summary),
+            _ => None,
+        }
+    }
+
+    /// Why the file could not be served, if it could not: opening it
+    /// failed, or a segment did.
+    pub fn failure(&self) -> Option<Failure> {
+        match self.watched.get()? {
+            Status::Failed(failure) => Some(failure),
+            _ => None,
+        }
+    }
+
+    fn listen<R: Read + Seek + Send + 'static>(
+        parts: Option<Parts<R>>,
+    ) -> io::Result<(Self, Arc<Shared<R>>)> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let address = listener.local_addr()?;
         let prefix = format!("/{}", token());
-        let media_type = if remuxer.video_size().is_some() {
-            "video/mp4"
-        } else {
-            "audio/mp4"
-        };
         let stop = Arc::new(AtomicBool::new(false));
+        let watched = Arc::new(Watched::default());
         let shared = Arc::new(Shared {
-            playlist: remuxer.hls_playlist("init.mp4", |index| format!("{index}.m4s")),
-            init: remuxer.init_segment(),
-            remuxer: Mutex::new(remuxer),
+            parts: Mutex::new(parts),
+            watched: watched.clone(),
             prefix: prefix.clone(),
-            media_type,
             stop: stop.clone(),
         });
         let accept = thread::Builder::new().name("gpui-av-hls".into()).spawn({
             let stop = stop.clone();
+            let shared = shared.clone();
             move || {
                 for stream in listener.incoming() {
                     if stop.load(Ordering::SeqCst) {
@@ -79,12 +247,14 @@ impl HlsServer {
                 }
             }
         })?;
-        Ok(Self {
+        let server = Self {
             url: format!("http://{address}{prefix}/index.m3u8"),
             address,
             stop,
             accept: Some(accept),
-        })
+            watched,
+        };
+        Ok((server, shared))
     }
 
     /// The playlist's URL.
@@ -215,10 +385,21 @@ fn respond<R: Read + Seek>(
     else {
         return status(writer, "404 Not Found");
     };
+    match shared.watched.wait() {
+        Some(Status::Ready(_)) => {}
+        Some(Status::Failed(_)) => return status(writer, "502 Bad Gateway"),
+        _ => return status(writer, "504 Gateway Timeout"),
+    }
+    let Ok(mut parts) = shared.parts.lock() else {
+        return status(writer, "500 Internal Server Error");
+    };
+    let Some(parts) = parts.as_mut() else {
+        return status(writer, "500 Internal Server Error");
+    };
     let segment;
     let (body, content_type): (&[u8], &str) = match name {
-        "index.m3u8" => (shared.playlist.as_bytes(), "application/vnd.apple.mpegurl"),
-        "init.mp4" => (&shared.init, shared.media_type),
+        "index.m3u8" => (parts.playlist.as_bytes(), "application/vnd.apple.mpegurl"),
+        "init.mp4" => (&parts.init, parts.media_type),
         _ => {
             let Some(index) = name
                 .strip_suffix(".m4s")
@@ -226,14 +407,15 @@ fn respond<R: Read + Seek>(
             else {
                 return status(writer, "404 Not Found");
             };
-            let made = match shared.remuxer.lock() {
-                Ok(mut remuxer) if index < remuxer.segments().len() => remuxer.media_segment(index),
-                Ok(_) => return status(writer, "404 Not Found"),
-                Err(_) => return status(writer, "500 Internal Server Error"),
-            };
-            match made {
+            if index >= parts.remuxer.segments().len() {
+                return status(writer, "404 Not Found");
+            }
+            match parts.remuxer.media_segment(index) {
                 Ok(bytes) => segment = bytes,
-                Err(_) => return status(writer, "500 Internal Server Error"),
+                Err(error) => {
+                    shared.watched.set(Status::Failed(Failure::from(&error)));
+                    return status(writer, "502 Bad Gateway");
+                }
             }
             (&segment, "video/iso.segment")
         }

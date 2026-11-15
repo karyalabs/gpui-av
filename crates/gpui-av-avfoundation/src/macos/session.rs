@@ -41,14 +41,6 @@ use super::loader::Loader;
 use super::probe::{self, HttpSource};
 use super::tracks::{Groups, Legible};
 
-/// A Matroska or WebM file played as HLS from a local server, and what the
-/// remuxer read from it: AVFoundation tells less about HLS media than about
-/// a file before the first frame.
-pub(crate) struct Remuxed {
-    pub server: gpui_av_remux::HlsServer,
-    pub hint: gpui_av::MediaInfo,
-}
-
 /// How often the session checks the player for state changes. AVFoundation
 /// reports most of them through key-value observing, which needs an
 /// Objective-C class; polling a few properties is cheaper to maintain.
@@ -71,9 +63,6 @@ pub(crate) struct AvSession {
     /// its delegate weakly, so the session keeps it. Declared after `inner`
     /// so the player goes first.
     _loader: Option<Loader>,
-    /// The local server a Matroska or WebM file plays from; after `inner`
-    /// too.
-    _remuxed: Option<gpui_av_remux::HlsServer>,
     observers: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
     _poll: Task<()>,
 }
@@ -132,15 +121,16 @@ struct Inner {
     pending_tracks: Vec<(TrackKind, Option<usize>)>,
     /// Subtitle text inside the media.
     legible: Legible,
-    /// What the remuxer read, for media played from a local server.
-    hint: Option<gpui_av::MediaInfo>,
+    /// The local server a Matroska or WebM source plays from. Last, so the
+    /// player and item go first.
+    remuxed: Option<gpui_av_remux::HlsServer>,
 }
 
 impl AvSession {
     pub(crate) fn new(
         asset: Retained<AVURLAsset>,
         loader: Option<Loader>,
-        remuxed: Option<Remuxed>,
+        remuxed: Option<gpui_av_remux::HlsServer>,
         http: Option<HttpSource>,
         events: EventSink,
         mtm: MainThreadMarker,
@@ -165,10 +155,6 @@ impl AvSession {
                 player.setAutomaticallyWaitsToMinimizeStalling(false);
             }
             (player, item, output)
-        };
-        let (server, hint) = match remuxed {
-            Some(remuxed) => (Some(remuxed.server), Some(remuxed.hint)),
-            None => (None, None),
         };
         let legible = Legible::attach(&item);
         let notes = Rc::new(Notes::default());
@@ -197,7 +183,7 @@ impl AvSession {
             groups: None,
             pending_tracks: Vec::new(),
             legible,
-            hint,
+            remuxed,
         }));
         let observers = observe(&inner, &notes);
         let weak = Rc::downgrade(&inner);
@@ -219,7 +205,6 @@ impl AvSession {
             observers,
             _poll: poll,
             _loader: loader,
-            _remuxed: server,
         }
     }
 }
@@ -364,6 +349,12 @@ impl Inner {
         if self.failed {
             return;
         }
+        // AVFoundation saw only the local server's 502; the server knows
+        // what really went wrong.
+        let error = match self.remuxed.as_ref().and_then(|server| server.failure()) {
+            Some(failure) => super::remux_failure(failure),
+            None => error,
+        };
         self.failed = true;
         // SAFETY: plain AVPlayer commands.
         unsafe { self.player.pause() };
@@ -439,8 +430,19 @@ impl Inner {
 
     fn on_loaded(&mut self) {
         let mut loaded = info::read(&self.item);
-        if let Some(hint) = &self.hint {
-            info::fill_from(&mut loaded.info, hint);
+        // AVFoundation tells less about HLS media than about a file before
+        // the first frame; the remuxer read the file itself.
+        if let Some(summary) = self.remuxed.as_ref().and_then(|server| server.summary()) {
+            let hint = gpui_av::MediaInfo {
+                duration: Some(summary.duration),
+                natural_size: summary
+                    .video_size
+                    .map(|(width, height)| gpui::size(width, height)),
+                has_video: summary.video_size.is_some(),
+                has_audio: Some(summary.has_audio),
+                ..Default::default()
+            };
+            info::fill_from(&mut loaded.info, &hint);
         }
         if let Some(codec) = &loaded.undecodable {
             self.fail(gpui_av::Error::new(
