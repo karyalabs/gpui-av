@@ -40,3 +40,13 @@ gpui-av-web = { workspace = true, optional = true }
 
 [lib]
 path = "src/gpui_av_platform.rs"
+
+# The example's window.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gpui-platform = { workspace = true, features = ["x11", "wayland"] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+gpui-platform = { workspace = true, features = ["runtime_shaders"] }
+
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+gpui-platform.workspace = true
