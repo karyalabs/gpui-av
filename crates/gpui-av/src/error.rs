@@ -24,6 +24,25 @@ pub enum ErrorKind {
 }
 
 /// A playback error: a [kind](ErrorKind) and a message for a person.
+///
+/// Match on the kind to decide what to show; show the message as it is.
+///
+/// ```
+/// use gpui_av::{Error, ErrorKind};
+///
+/// fn advice(error: &Error) -> &'static str {
+///     match error.kind() {
+///         ErrorKind::Unauthorized => "Sign in again.",
+///         ErrorKind::NotFound => "This video is gone.",
+///         ErrorKind::Network => "Check the connection.",
+///         ErrorKind::Unsupported => "This video's format cannot play here.",
+///         _ => "This video cannot play.",
+///     }
+/// }
+/// let error = Error::new(ErrorKind::NotFound, "the server answered 404");
+/// assert_eq!(advice(&error), "This video is gone.");
+/// assert_eq!(error.message(), "the server answered 404");
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {
     kind: ErrorKind,

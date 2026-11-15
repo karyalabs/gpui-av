@@ -17,6 +17,16 @@ pub enum Location {
 /// source (range requests included) or fails with
 /// [`ErrorKind::Unsupported`](crate::ErrorKind::Unsupported). It never
 /// drops them.
+///
+/// ```
+/// use gpui_av::Source;
+///
+/// let film = Source::file("/Users/me/Movies/film.mkv");
+/// let stream = Source::url("https://media.example.com/Videos/42/stream.mkv")
+///     .header("Authorization", "MediaBrowser Token=\"abc\"");
+/// assert_eq!(stream.headers().len(), 1);
+/// assert!(film.path().is_some());
+/// ```
 #[derive(Clone, PartialEq, Eq)]
 pub struct Source {
     location: Location,

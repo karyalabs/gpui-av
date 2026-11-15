@@ -27,13 +27,17 @@ pub struct Cue {
 /// A track of subtitles parsed from a WebVTT (`.vtt`) or SubRip (`.srt`)
 /// file. Cheap to clone.
 ///
-/// ```ignore
+/// ```no_run
+/// # use gpui::{Entity, IntoElement, ParentElement, Styled, div};
+/// # use gpui_av::{Subtitles, VideoPlayer, captions, video};
+/// # fn render(player: &Entity<VideoPlayer>) -> Result<impl IntoElement, Box<dyn std::error::Error>> {
 /// let subtitles = Subtitles::parse(&std::fs::read_to_string("film.vtt")?)?;
 /// // In render, over the picture:
-/// div()
+/// Ok(div()
 ///     .relative()
-///     .child(video(&player).size_full())
-///     .child(captions(&player).subtitles(&subtitles))
+///     .child(video(player).size_full())
+///     .child(captions(player).subtitles(&subtitles)))
+/// # }
 /// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Subtitles {
