@@ -365,6 +365,9 @@ impl Inner {
             }
         } else if kind == MF_MEDIA_ENGINE_EVENT_TIMEUPDATE.0 {
             self.find_late_text_tracks();
+            if trace() {
+                self.trace_text();
+            }
             // A file cut off inside its media data can also leave the
             // engine playing nothing with its clock running on past the
             // stated length, with no end and no error (seen on Windows
@@ -557,6 +560,39 @@ impl Inner {
             }
         }
         self.text_on = index.filter(|index| *index < self.text.len());
+    }
+
+    /// Prints the state of the text track that is on.
+    fn trace_text(&self) {
+        let (Some(timed), Some(on)) = (&self.timed, self.text_on) else {
+            return;
+        };
+        let Some((id, _)) = self.text.get(on) else {
+            return;
+        };
+        // SAFETY: timed text queries on the main thread.
+        unsafe {
+            let Ok(track) = timed
+                .GetTextTracks()
+                .and_then(|list| list.GetTrackById(*id))
+            else {
+                eprintln!("mediafoundation: text track {id} not found");
+                return;
+            };
+            let cues = track.GetCueList().ok();
+            let count = cues.as_ref().map(|cues| cues.GetLength());
+            let first = cues
+                .as_ref()
+                .and_then(|cues| cues.GetCueByIndex(0).ok())
+                .map(|cue| (cue.GetStartTime(), cue.GetDuration(), cue.GetLineCount()));
+            eprintln!(
+                "mediafoundation: text track {id} at {:.3} s: active {}, ready {:?}, error {:?}, cues {count:?}, first {first:?}",
+                self.engine.GetCurrentTime(),
+                track.IsActive().as_bool(),
+                track.GetReadyState(),
+                track.GetErrorCode(),
+            );
+        }
     }
 
     /// The text of the cues on screen now, on the text track that is on.
