@@ -1,0 +1,15 @@
+[package]
+name = "gpui-av-remux"
+description = "Matroska and WebM to fragmented MP4, without decoding, for players that know the codecs but not the container."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/gpui_av_remux.rs"
+
+[lints]
+workspace = true
