@@ -4,7 +4,7 @@ use std::rc::{Rc, Weak};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use gpui::{App, Corners, RenderImage, Window, size};
+use gpui::{App, Corners, RenderImage, SharedString, Window, size};
 use gpui_av::{
     Backend, Error, ErrorKind, EventSink, Location, MediaInfo, Placement, PlaybackState, Session,
     Source, Stats, Track, TrackKind,
@@ -18,22 +18,22 @@ use windows::Win32::Graphics::Imaging::{
     WICBitmapCacheOnLoad, WICBitmapLockRead, WICRect,
 };
 use windows::Win32::Media::MediaFoundation::{
-    CLSID_MFMediaEngineClassFactory, IMFAttributes, IMFMediaEngine, IMFMediaEngineClassFactory,
-    IMFMediaEngineEx, IMFMediaEngineNotify, IMFMediaEngineNotify_Impl, MF_MEDIA_ENGINE_CALLBACK,
-    MF_MEDIA_ENGINE_ERR_ABORTED, MF_MEDIA_ENGINE_ERR_DECODE, MF_MEDIA_ENGINE_ERR_ENCRYPTED,
-    MF_MEDIA_ENGINE_ERR_NETWORK, MF_MEDIA_ENGINE_ERR_SRC_NOT_SUPPORTED,
-    MF_MEDIA_ENGINE_EVENT_CANPLAY, MF_MEDIA_ENGINE_EVENT_DURATIONCHANGE,
-    MF_MEDIA_ENGINE_EVENT_ENDED, MF_MEDIA_ENGINE_EVENT_ERROR, MF_MEDIA_ENGINE_EVENT_FORMATCHANGE,
-    MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA, MF_MEDIA_ENGINE_EVENT_PAUSE,
-    MF_MEDIA_ENGINE_EVENT_PLAYING, MF_MEDIA_ENGINE_EVENT_SEEKED, MF_MEDIA_ENGINE_EVENT_TIMEUPDATE,
-    MF_MEDIA_ENGINE_EVENT_WAITING, MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT, MF_MT_MAJOR_TYPE,
-    MF_SD_LANGUAGE, MF_SD_STREAM_NAME, MF_VERSION, MFCreateAttributes, MFMediaType_Audio,
-    MFSTARTUP_FULL, MFStartup,
+    CLSID_MFMediaEngineClassFactory, IMFAttributes, IMFGetService, IMFMediaEngine,
+    IMFMediaEngineClassFactory, IMFMediaEngineEx, IMFMediaEngineNotify, IMFMediaEngineNotify_Impl,
+    IMFTimedText, IMFTimedTextTrack, MF_MEDIA_ENGINE_CALLBACK, MF_MEDIA_ENGINE_ERR_ABORTED,
+    MF_MEDIA_ENGINE_ERR_DECODE, MF_MEDIA_ENGINE_ERR_ENCRYPTED, MF_MEDIA_ENGINE_ERR_NETWORK,
+    MF_MEDIA_ENGINE_ERR_SRC_NOT_SUPPORTED, MF_MEDIA_ENGINE_EVENT_CANPLAY,
+    MF_MEDIA_ENGINE_EVENT_DURATIONCHANGE, MF_MEDIA_ENGINE_EVENT_ENDED, MF_MEDIA_ENGINE_EVENT_ERROR,
+    MF_MEDIA_ENGINE_EVENT_FORMATCHANGE, MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA,
+    MF_MEDIA_ENGINE_EVENT_PAUSE, MF_MEDIA_ENGINE_EVENT_PLAYING, MF_MEDIA_ENGINE_EVENT_SEEKED,
+    MF_MEDIA_ENGINE_EVENT_TIMEUPDATE, MF_MEDIA_ENGINE_EVENT_WAITING, MF_MEDIA_ENGINE_TIMEDTEXT,
+    MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT, MF_MT_MAJOR_TYPE, MF_SD_LANGUAGE, MF_SD_STREAM_NAME,
+    MF_VERSION, MFCreateAttributes, MFMediaType_Audio, MFSTARTUP_FULL, MFStartup,
 };
 use windows::Win32::System::Com::StructuredStorage::{PROPVARIANT, PropVariantClear};
-use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
+use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
 use windows::Win32::System::Variant::{VT_CLSID, VT_LPWSTR};
-use windows::core::{BSTR, HRESULT, Interface, implement};
+use windows::core::{BSTR, HRESULT, Interface, PWSTR, implement};
 
 /// Plays media with Media Foundation's media engine and draws it as GPUI
 /// images.
@@ -174,6 +174,15 @@ struct Inner {
     audio: Vec<(u32, Track)>,
     /// An audio choice made before the metadata loaded.
     pending_audio: Option<usize>,
+    /// The engine's timed text, for subtitles inside the media.
+    timed: Option<IMFTimedText>,
+    /// The text tracks, by their timed text id, read when the metadata
+    /// loads.
+    text: Vec<(u32, Track)>,
+    /// The text track on, by index into `text`.
+    text_on: Option<usize>,
+    /// A text choice made before the metadata loaded.
+    pending_text: Option<Option<usize>>,
 }
 
 /// The presentation times of the first and last frame of a run of frames,
@@ -227,12 +236,32 @@ impl MfSession {
                 &MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT,
                 DXGI_FORMAT_B8G8R8A8_UNORM.0 as u32,
             )?;
-            let engine = factory.CreateInstance(0, &attributes)?;
+            let engine: IMFMediaEngine = factory.CreateInstance(0, &attributes)?;
             let wic: IWICImagingFactory =
                 CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
-            engine.SetSource(&BSTR::from(url))?;
             (engine, wic)
         };
+        // Subtitles inside the media come through the engine's timed text
+        // (Windows 8.1 and later), once in-band text is on: before the
+        // source is set.
+        // SAFETY: a service lookup and a setting on the new engine.
+        let timed = unsafe {
+            engine
+                .cast::<IMFGetService>()
+                .and_then(|service| service.GetService::<IMFTimedText>(&MF_MEDIA_ENGINE_TIMEDTEXT))
+                .and_then(|timed| timed.SetInBandEnabled(true).map(|()| timed))
+        };
+        let timed = match timed {
+            Ok(timed) => Some(timed),
+            Err(error) => {
+                log(&format!(
+                    "no timed text, so no subtitles inside the media: {error}"
+                ));
+                None
+            }
+        };
+        // SAFETY: a plain engine command on the main thread.
+        unsafe { engine.SetSource(&BSTR::from(url))? };
         // Windows 8 and later have the extended engine, with stream
         // selection.
         let streams = engine.cast::<IMFMediaEngineEx>().ok();
@@ -252,6 +281,10 @@ impl MfSession {
             streams,
             audio: Vec::new(),
             pending_audio: None,
+            timed,
+            text: Vec::new(),
+            text_on: None,
+            pending_text: None,
         }));
         inner.borrow().sink.state(PlaybackState::Loading);
         let weak: Weak<RefCell<Inner>> = Rc::downgrade(&inner);
@@ -294,6 +327,10 @@ impl Inner {
             if let Some(index) = self.pending_audio.take() {
                 self.select_audio(index);
             }
+            self.read_text_tracks();
+            // Subtitles start off, as on every backend.
+            let text = self.pending_text.take().flatten();
+            self.select_text(text);
             self.report_info();
             if let Some(position) = self.pending_seek.take() {
                 self.seek(position);
@@ -396,17 +433,22 @@ impl Inner {
                 natural_size,
                 has_video,
                 has_audio: Some(self.engine.HasAudio().as_bool()),
-                tracks: self.audio.iter().map(|(_, track)| track.clone()).collect(),
+                tracks: self
+                    .audio
+                    .iter()
+                    .chain(self.text.iter())
+                    .map(|(_, track)| track.clone())
+                    .collect(),
                 audio_track: self.audio_track(),
+                text_track: self.text_on,
                 ..MediaInfo::default()
             }
         };
         self.sink.info(info);
     }
 
-    /// Lists the audio streams. Text inside the media is not read on
-    /// Windows yet, so text streams are left out rather than offered
-    /// without their text.
+    /// Lists the audio streams. Text streams are listed by
+    /// [`Inner::read_text_tracks`], from the engine's timed text.
     fn read_streams(&mut self) {
         let Some(streams) = &self.streams else {
             return;
@@ -428,6 +470,81 @@ impl Inner {
             audio.push((stream, track));
         }
         self.audio = audio;
+    }
+
+    /// Lists the text tracks inside the media.
+    fn read_text_tracks(&mut self) {
+        let Some(timed) = &self.timed else {
+            return;
+        };
+        // SAFETY: timed text queries on a loaded engine, on the main thread.
+        let tracks = unsafe {
+            let Ok(list) = timed.GetTextTracks() else {
+                return;
+            };
+            (0..list.GetLength())
+                .filter_map(|index| list.GetTrack(index).ok())
+                .enumerate()
+                .map(|(index, track)| {
+                    let mut entry = Track::new(TrackKind::Text, index);
+                    if let Some(language) = owned_string(track.GetLanguage()) {
+                        entry = entry.with_language(language);
+                    }
+                    if let Some(label) = owned_string(track.GetLabel()) {
+                        entry = entry.with_title(label);
+                    }
+                    (track.GetId(), entry)
+                })
+                .collect()
+        };
+        self.text = tracks;
+    }
+
+    /// Turns on the text track at `index`, or every one off for `None`.
+    fn select_text(&mut self, index: Option<usize>) {
+        let Some(timed) = &self.timed else {
+            return;
+        };
+        for (position, (id, _)) in self.text.iter().enumerate() {
+            // SAFETY: a timed text command on the main thread.
+            if let Err(error) = unsafe { timed.SelectTrack(*id, Some(position) == index) } {
+                log(&format!("could not switch text track {id}: {error}"));
+            }
+        }
+        self.text_on = index.filter(|index| *index < self.text.len());
+    }
+
+    /// The text of the cues on screen now, on the text track that is on.
+    fn current_text(&self) -> Option<String> {
+        let timed = self.timed.as_ref()?;
+        let (id, _) = self.text.get(self.text_on?)?;
+        // SAFETY: timed text queries on the main thread; each string is
+        // copied out and freed.
+        unsafe {
+            let now = self.engine.GetCurrentTime();
+            let track: IMFTimedTextTrack = timed.GetTextTracks().ok()?.GetTrackById(*id).ok()?;
+            let cues = track.GetCueList().ok()?;
+            let mut lines = Vec::new();
+            for index in 0..cues.GetLength() {
+                let Ok(cue) = cues.GetCueByIndex(index) else {
+                    continue;
+                };
+                let start = cue.GetStartTime();
+                if !(start <= now && now < start + cue.GetDuration()) {
+                    continue;
+                }
+                for line in 0..cue.GetLineCount() {
+                    if let Some(text) = cue
+                        .GetLine(line)
+                        .ok()
+                        .and_then(|line| owned_string(line.GetText()))
+                    {
+                        lines.push(text);
+                    }
+                }
+            }
+            (!lines.is_empty()).then(|| lines.join("\n"))
+        }
     }
 
     fn audio_track(&self) -> Option<usize> {
@@ -672,12 +789,41 @@ fn error(code: usize, hresult: HRESULT) -> Error {
     )
 }
 
+/// A string Media Foundation allocated for the caller, copied out and
+/// freed. Empty strings count as none.
+///
+/// # Safety
+///
+/// `string` must be null or a string from `CoTaskMemAlloc` that nothing
+/// else frees.
+unsafe fn owned_string(string: windows::core::Result<PWSTR>) -> Option<String> {
+    let string = string.ok()?;
+    if string.is_null() {
+        return None;
+    }
+    // SAFETY: a valid null-terminated string, per the contract above.
+    let text = unsafe { string.to_string() }.ok();
+    // SAFETY: the caller owns it, per the contract above.
+    unsafe { CoTaskMemFree(Some(string.0 as *const _)) };
+    text.filter(|text| !text.is_empty())
+}
+
 fn log(message: &str) {
     eprintln!("gpui-av-mediafoundation: {message}");
 }
 
 impl Session for MfSession {
     fn select_track(&mut self, kind: TrackKind, index: Option<usize>) {
+        if kind == TrackKind::Text {
+            let mut inner = self.inner.borrow_mut();
+            if !inner.loaded {
+                inner.pending_text = Some(index);
+                return;
+            }
+            inner.select_text(index);
+            inner.report_info();
+            return;
+        }
         let (TrackKind::Audio, Some(index)) = (kind, index) else {
             return;
         };
@@ -732,6 +878,14 @@ impl Session for MfSession {
         if let Err(error) = unsafe { self.inner.borrow().engine.SetLoop(looping) } {
             log(&format!("loop failed: {error}"));
         }
+    }
+
+    fn text(&self) -> Option<SharedString> {
+        let inner = self.inner.borrow();
+        if !inner.loaded {
+            return None;
+        }
+        inner.current_text().map(SharedString::from)
     }
 
     fn position(&self) -> Duration {

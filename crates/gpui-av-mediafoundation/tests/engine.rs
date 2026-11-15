@@ -235,6 +235,35 @@ mod windows_test {
                 chosen == Some(1),
                 chosen,
             );
+            // The clip's subtitles: "The first line" from 1 s to 4 s.
+            let text_tracks = player.read_with(cx, |player, _| {
+                player
+                    .info()
+                    .tracks
+                    .iter()
+                    .filter(|track| track.kind == TrackKind::Text)
+                    .count()
+            });
+            report.check(
+                "the subtitle track is listed",
+                text_tracks == 1,
+                text_tracks,
+            );
+            player.update(cx, |player, _| player.select_text_track(Some(0)));
+            let started = Instant::now();
+            let mut text = None;
+            while started.elapsed() < Duration::from_secs(8) {
+                text = player.read_with(cx, |player, _| player.text());
+                if text.is_some() {
+                    break;
+                }
+                wait(cx, 50).await;
+            }
+            report.check(
+                "subtitles show once a text track is on",
+                text.as_deref() == Some("The first line"),
+                &text,
+            );
             cx.update(|_| drop(player));
         }
 
