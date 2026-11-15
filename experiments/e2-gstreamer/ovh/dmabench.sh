@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
-# E5 step 2 on the A10: GStreamer's VA-API decoders (nvidia-vaapi-driver)
+# E5 step 2 on an OVH NVIDIA GPU: GStreamer's VA-API decoders (nvidia-vaapi-driver)
 # handing dmabufs to our GPUI, against the same decoders through NV12 in
 # memory. Tier A, the heavier clips and a 10 minute 1080p60 soak, muted.
 A=/root/agent.py
 cd /root/run; export DISPLAY=:0
 [ -x lab-dmabuf ] || { python3 $A get files/lab-dmabuf lab-dmabuf && chmod +x lab-dmabuf; }
-export LIBVA_DRIVER_NAME=nvidia NVD_BACKEND=direct
+# Ubuntu 24.04 ships nvidia-vaapi-driver 0.0.8, whose direct backend cannot
+# open the 580 driver; its EGL backend works. GStreamer only uses VA drivers
+# on its allowlist (Intel, Mesa) unless GST_VA_ALL_DRIVERS is set.
+export LIBVA_DRIVER_NAME=nvidia NVD_BACKEND=egl GST_VA_ALL_DRIVERS=1
 # VA-API decoders first: NVDEC's own decoders give CUDA memory, not dmabufs.
 export GST_PLUGIN_FEATURE_RANK=nvh264dec:0,nvh265dec:0,nvav1dec:0,nvvp9dec:0,nvvp8dec:0,vah264dec:300,vah265dec:300,vaav1dec:300,vavp9dec:300,vavp8dec:300
+rm -rf ~/.cache/gstreamer-1.0
+gst-inspect-1.0 vah264dec >/dev/null 2>&1 || { echo "no VA decoders in GStreamer"; gst-inspect-1.0 va; exit 1; }
+timeout 30 gst-launch-1.0 -v filesrc location=clips/h264-1920x1080-60fps.mp4 ! qtdemux ! h264parse ! vah264dec ! 'video/x-raw(memory:DMABuf)' ! fakesink num-buffers=60 2>&1 | grep -m2 -E 'drm-format|ERROR'
 OUT=/root/run/out/dmabuf; mkdir -p $OUT
 gpu_log() { nvidia-smi --query-gpu=timestamp,utilization.gpu,utilization.decoder,memory.used --format=csv -l 1 >"$1" 2>&1 & echo $!; }
 for mode in dmabuf nv12; do

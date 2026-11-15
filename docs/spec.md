@@ -473,9 +473,10 @@ so on; 0.3.12 is Zed at `d2a4fb6`. gpui-av, gpuicn, Matty and gpui-kit
 4. Linux video (`gpui-pre-wgpu`), in two steps. Step 1, done
    (karyalabs/zed#7): `gpui::VideoFrame` holds NV12 in memory the caller
    owns and `Window::paint_video_frame` draws it; the renderer uploads the
-   planes and converts with the frame's own matrix and range. Step 2: draw
-   from dmabuf planes through wgpu's `texture_from_dmabuf_fd`, so NVDEC and
-   VA-API frames show with no copy, and P010 for 10-bit (E5).
+   planes and converts with the frame's own matrix and range. Step 2, written
+   and not yet measured (karyalabs/zed#8): draw from dmabuf planes through
+   wgpu's `texture_from_dmabuf_fd`, so VA-API frames show with no copy.
+   Then P010 for 10-bit (E5).
 5. Web: draw a `VideoFrame` or `HTMLVideoElement` inside the canvas
    through WebGPU external textures once wgpu releases them, which removes
    the DOM overlay's limits (E4).
@@ -504,7 +505,7 @@ question; when it is done, the answer is folded into this spec.
 | E2 | Linux: GStreamer + RenderImage at 1080p: what does the per-frame copy cost? | CPU, memory and dropped frames at 720p and 1080p. **Done 2026-11-13 (sandbox, no GPU): tier A passes from files and over HTTP; the copies cost about 1.9 ms of CPU per 720p frame and 5 to 6 ms per 1080p frame, as much as software decoding. On an NVIDIA A10 (2026-11-14): tier A 15/15 and 4K/AV1/VP9 5/5 with NVDEC and in software; no drops up to 1080p60, flat memory over a 10 minute 1080p60 soak (0.4% dropped, 142% CPU); 4K 10-bit drops a third of its frames through the image path.** Wayland and VA-API on Intel/AMD are a listed gap. See `experiments/e2-gstreamer` |
 | E3 | Web: a DOM `<video>` overlay that tracks a GPUI element through scroll, resize and close | Works in Chrome, Firefox and Safari. **Done for Chrome 2026-11-13:** tier A passes, memory flat over 10 minutes, overlay follows resize, scroll and a window moved between a 2x and a 1x screen. Safari and Firefox are not run: a listed gap. See `experiments/e3-web-overlay` |
 | E4 | Web: WebCodecs frames drawn inside the canvas without an overlay | One clip plays in Chrome; cost measured against E3 |
-| E5 | Zero-copy on wgpu: implement `PrimitiveBatch::Surfaces` (NV12) in gpui-pre-wgpu | Patch works locally; decide whether to propose it to Zed. **Step 1 done 2026-11-14 (karyalabs/zed#7, NV12 from memory): on the A10 CPU falls by half to three quarters with NVDEC (1080p60 158% to 52%, 4K 10-bit HEVC 380% to 128% and no drops), copies 0.01 ms a frame.** Step 2 (dmabuf, no copy out of video memory) is next. See `experiments/e2-gstreamer` |
+| E5 | Zero-copy on wgpu: implement `PrimitiveBatch::Surfaces` (NV12) in gpui-pre-wgpu | Patch works locally; decide whether to propose it to Zed. **Step 1 done 2026-11-14 (karyalabs/zed#7, NV12 from memory): on the A10 CPU falls by half to three quarters with NVDEC (1080p60 158% to 52%, 4K 10-bit HEVC 380% to 128% and no drops), copies 0.01 ms a frame.** Step 2 (dmabuf, no copy out of video memory) is written (karyalabs/zed#8, `GPUI_AV_DMABUF=1`) but unmeasured: on OVH's NVIDIA image no VA-API decoder runs (2026-11-15, L4), so it waits for an Intel or AMD Linux desktop. See `experiments/e2-gstreamer` |
 | E6 | Can we build on gpui-video-player or alhazen instead of writing backends? | **Done 2026-11-12: no; reuse ideas.** See `experiments/e6-existing-crates` |
 | E7 | Containers the platform will not open (MKV on AVFoundation and in browsers): our own Rust demuxer feeding VideoToolbox / WebCodecs (Mediabunny on the web), or an optional GStreamer backend on macOS? | The MKV clips in the corpus play on macOS and in Chrome through the chosen path; cost measured |
 | E8 | macOS: real HDR output. Route chosen 2026-11-13: an extended range path in our GPUI (section 4.3, patches 1 and 2). The alternative, a second presenter that lets macOS draw the video in its own layer over the element (`AVSampleBufferDisplayLayer` or `AVPlayerLayer`, placed as the web overlay is; GPUI cannot draw over it), is not scheduled. | An HDR10 and an HLG clip show with extended brightness on an XDR display through the chosen path; cost and limits recorded |

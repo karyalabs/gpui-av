@@ -34,8 +34,11 @@ SWIFT_REGION = "GRA"
 CONTAINER = "gpuiav-box"
 IMAGE = "41d52c27-b538-4e11-8f5e-346bec89f87a"  # Ubuntu 24.04 - NVIDIA - v580
 NETWORK = "bcf59eb2-9d83-41cc-b4f5-0435ed594833"  # Ext-Net
-# Rupees an hour, 18% GST included; OVH bills every hour started.
-RATES = {"a10-45": 70 * 1.18, "a10-90": 140 * 1.18, "t2-45": 0}
+# Rupees an hour, 18% GST included; OVH bills every hour started. Only
+# a10-45 is a known INR price; the rest are scaled from OVH's EUR list
+# (a10-45 0.76, l4-90 0.75, t2-45 0.80, l40s-90 1.40) and rounded up.
+RATES = {"a10-45": 70 * 1.18, "a10-90": 140 * 1.18, "l4-90": 70 * 1.18,
+         "t2-45": 74 * 1.18, "l40s-90": 130 * 1.18}
 BUDGET = float(os.environ.get("BOX_BUDGET_INR", "12000"))
 MAX_HOURS = 8
 PREFIX = "gpuiav-box-"
