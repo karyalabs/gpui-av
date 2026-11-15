@@ -161,9 +161,11 @@ impl VideoPlayer {
                 if self.state != state {
                     if matches!(state, PlaybackState::Failed(_)) {
                         // Nothing more can play; stop the backend's work,
-                        // keeping what it counted.
+                        // keeping what it counted and who it was.
                         if let Some(session) = self.session.take() {
                             self.final_stats = session.stats();
+                            self.backend_name = session.backend_name().unwrap_or(self.backend_name);
+                            self.presenter = session.presenter().unwrap_or(self.presenter);
                         }
                     }
                     self.state = state.clone();
@@ -285,14 +287,22 @@ impl VideoPlayer {
         self.looping
     }
 
-    /// The name of the backend playing this media.
+    /// The name of the backend playing this media. With a
+    /// [`Fallback`](crate::Fallback), the backend it is trying or has
+    /// settled on.
     pub fn backend_name(&self) -> &'static str {
-        self.backend_name
+        self.session
+            .as_ref()
+            .and_then(|session| session.backend_name())
+            .unwrap_or(self.backend_name)
     }
 
     /// How the backend gets frames on screen, such as `"surface"`.
     pub fn presenter(&self) -> &'static str {
-        self.presenter
+        self.session
+            .as_ref()
+            .and_then(|session| session.presenter())
+            .unwrap_or(self.presenter)
     }
 
     /// Whether the picture can change without a new event and only shows
