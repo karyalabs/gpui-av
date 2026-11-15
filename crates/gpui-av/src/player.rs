@@ -3,12 +3,12 @@ use std::ops::Range;
 use std::rc::Rc;
 use std::time::Duration;
 
-use gpui::{App, Context, EventEmitter, Size, Task, Window};
+use gpui::{App, Context, EventEmitter, SharedString, Size, Task, Window};
 
 use crate::backend::{
     Backend, BackendEvent, EventSink, Placement, Session, Stats, default_backend,
 };
-use crate::{Error, ErrorKind, MediaInfo, Source};
+use crate::{Error, ErrorKind, MediaInfo, Source, TrackKind};
 
 /// Where a player is in the life of its media.
 #[derive(Clone, Debug, PartialEq)]
@@ -234,6 +234,32 @@ impl VideoPlayer {
             session.set_looping(looping);
         }
         cx.notify();
+    }
+
+    /// Plays the audio track at `index` among the media's audio tracks
+    /// (see [`MediaInfo::tracks`]). An [`PlayerEvent::InfoChanged`] follows
+    /// with the new [`MediaInfo::audio_track`]; a backend that cannot
+    /// switch tracks ignores it.
+    pub fn select_audio_track(&mut self, index: usize) {
+        if let Some(session) = &mut self.session {
+            session.select_track(TrackKind::Audio, Some(index));
+        }
+    }
+
+    /// Shows the text track at `index` among the media's text tracks, or
+    /// none. Subtitles inside the media start off. An
+    /// [`PlayerEvent::InfoChanged`] follows with the new
+    /// [`MediaInfo::text_track`]; a backend that cannot switch ignores it.
+    pub fn select_text_track(&mut self, index: Option<usize>) {
+        if let Some(session) = &mut self.session {
+            session.select_track(TrackKind::Text, index);
+        }
+    }
+
+    /// The subtitle from the chosen text track inside the media that
+    /// shows now, if any (see [`select_text_track`](Self::select_text_track)).
+    pub fn text(&self) -> Option<SharedString> {
+        self.session.as_ref().and_then(|session| session.text())
     }
 
     /// The playback state.

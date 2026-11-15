@@ -46,6 +46,8 @@ pub const GST_MESSAGE_QOS: c_int = 1 << 24;
 
 /// playbin's `flags`: let the video sink take the decoder's format, since
 /// our own sink bin converts.
+/// playbin shows (burns in) the selected text track.
+pub const GST_PLAY_FLAG_TEXT: c_uint = 1 << 2;
 pub const GST_PLAY_FLAG_NATIVE_VIDEO: c_uint = 1 << 6;
 
 #[repr(C)]
@@ -285,6 +287,7 @@ library!(GstApp {
     ),
     gst_app_sink_pull_sample: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
     gst_app_sink_pull_preroll: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
+    gst_app_sink_try_pull_sample: unsafe extern "C" fn(*mut c_void, GstClockTime) -> *mut c_void,
 });
 
 /// Every library this backend uses, loaded and initialised.

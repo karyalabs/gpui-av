@@ -6,10 +6,10 @@ use std::ops::Range;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
-use gpui::{App, Window};
+use gpui::{App, SharedString, Window};
 
 use crate::backend::{Backend, BackendEvent, EventSink, Placement, Session, Stats};
-use crate::{Error, ErrorKind, PlaybackState, Source};
+use crate::{Error, ErrorKind, PlaybackState, Source, TrackKind};
 
 /// Plays each source with the first of several backends that can.
 ///
@@ -97,6 +97,8 @@ struct Wanted {
     volume: Option<f32>,
     muted: Option<bool>,
     looping: Option<bool>,
+    audio_track: Option<usize>,
+    text_track: Option<Option<usize>>,
 }
 
 struct Current {
@@ -237,6 +239,12 @@ impl Wanted {
         if let Some(looping) = self.looping {
             session.set_looping(looping);
         }
+        if let Some(index) = self.audio_track {
+            session.select_track(TrackKind::Audio, Some(index));
+        }
+        if let Some(index) = self.text_track {
+            session.select_track(TrackKind::Text, index);
+        }
         if let Some(position) = self.seek {
             session.seek(position);
         }
@@ -325,6 +333,20 @@ impl Session for FallbackSession {
         self.command(
             |wanted| wanted.looping = Some(looping),
             |session| session.set_looping(looping),
+        );
+    }
+
+    fn text(&self) -> Option<SharedString> {
+        self.with(|session| session.text()).flatten()
+    }
+
+    fn select_track(&mut self, kind: TrackKind, index: Option<usize>) {
+        self.command(
+            |wanted| match kind {
+                TrackKind::Audio => wanted.audio_track = index,
+                TrackKind::Text => wanted.text_track = Some(index),
+            },
+            |session| session.select_track(kind, index),
         );
     }
 

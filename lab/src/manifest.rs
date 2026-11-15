@@ -236,6 +236,7 @@ mod tests {
                 matrix: Some(ColorMatrix::Bt709),
                 transfer: Some(TransferFunction::Sdr),
             },
+            ..MediaInfo::default()
         };
         let checks = entry("h264-1280x720-rotate90.mp4").check(&info);
         assert_eq!(

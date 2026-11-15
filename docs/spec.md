@@ -292,11 +292,11 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   reads `AVPlayerItem.loadedTimeRanges`, the web the element's
   `buffered`, and GStreamer playbin's buffering query (in time, or in
   percent of the length). The lab shows them in its stats panel.
-- **Subtitles.** `gpui_av::Subtitles::parse` reads a sidecar WebVTT or
+- **Sidecar subtitles.** `gpui_av::Subtitles::parse` reads a sidecar WebVTT or
   SubRip file (telling them apart by WebVTT's header; notes, styles,
   regions and cue settings are skipped, inline markup is stripped) into
   cues sorted by start, and answers which cues show at a position.
-  `captions(&player, &subtitles)` is a plain element that shows the cue
+  `captions(&player).subtitles(&subtitles)` is a plain element that shows the cue
   due at the player's position at the bottom of its parent, styleable
   like a `div`. It needs no backend support and works on every backend
   that draws into the window; it follows the position because the window
@@ -304,6 +304,23 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   over the `<video>` overlay, so there captions need the element's own
   text tracks (not built yet). The lab loads a `.vtt` or `.srt` with the
   same name as a clip file and shows it over the picture.
+- **Tracks inside the media.** `MediaInfo::tracks` lists the audio and
+  text tracks (kind, index among its kind, language and title as the
+  container states them), with `audio_track` and `text_track` saying
+  which play. `VideoPlayer::select_audio_track(index)` and
+  `select_text_track(Option<index>)` choose (`Session::select_track`; a
+  session that cannot switch ignores it), and the next `InfoChanged`
+  carries the result. Text inside the media starts off on every backend.
+  A chosen text track's cue reaches the app as text
+  (`Session::text`, `VideoPlayer::text`), never burned into the picture,
+  and `captions(&player)` draws it, so in-media and sidecar subtitles
+  look the same and can be styled. GStreamer: playbin's `current-audio`
+  and `current-text`, tags from `get-audio-tags`/`get-text-tags`, and
+  playbin's `text-sink` set to an appsink read on the 20 ms poll (with
+  `GST_PLAY_FLAG_NATIVE_VIDEO` playbin does not overlay text itself).
+  macOS (`AVMediaSelectionGroup`), Windows (`IMFMediaEngineEx` stream
+  selection) and the web (`audioTracks`, `textTracks`) list no tracks
+  yet.
 - **Stats.** `Session::stats` reports frames presented and dropped (zero
   for a session that cannot tell); `VideoPlayer::stats` passes them on for
   the lab's stats panel and bench, and keeps the last counts after a
@@ -826,8 +843,8 @@ about 2026-11-24) runs beside it and blocks nothing here.
 | S2 | A platform default: one crate whose `init(cx)` sets the right `Fallback` for the target (macOS: AVFoundation, then GStreamer where installed; Linux: GStreamer; web: the browser), each backend behind a cargo feature an app can turn off; the lab gains an "auto" entry | Done 2026-11-15; GStreamer not yet played on macOS or Windows |
 | S3 | The public API made ready for others: docs on every item with runnable examples, a quick start in the README, `buffered`, and a check that the crates package for crates.io (publishing itself waits for Arya) | `buffered` done 2026-11-15 (macOS part compiled, not yet run on a Mac); `gpui-av` packages and builds alone on stock gpui-pre; docs and examples next |
 | S4 | Subtitles: sidecar WebVTT and SRT parsed in the API crate, cues by position, and an element that draws them over the picture on the native backends (on the web the `<video>` element's own text tracks, since GPUI cannot draw over the overlay) || Sidecar WebVTT and SRT with `captions()` done 2026-11-15 for backends that draw into the window (checked with GStreamer under Xvfb); web text tracks not built |
-| S5 | Audio and text tracks inside the media: list them and pick one, on each backend | |
-| S6 | Windows: a Media Foundation backend (`IMFMediaEngine`), drawn as GPUI images first, checked by a Windows run in GitHub Actions started by hand (CI stays one fast job) || Backend written 2026-11-15 (image path, no request headers); see the Windows run in its PR |
+| S5 | Audio and text tracks inside the media: list them and pick one, on each backend || GStreamer done 2026-11-15 (list, switch, in-media text through `captions`, checked in the lab under Xvfb); macOS, Windows and web next |
+| S6 | Windows: a Media Foundation backend (`IMFMediaEngine`), drawn as GPUI images first, checked by a Windows run in GitHub Actions started by hand (CI stays one fast job) || Done 2026-11-15 (#24): every engine check passes on `windows-latest`, and the lab's bench gives 12 of 15 in a GPUI window there. Open: HEVC needs the Store's HEVC extension (absent on the runner), an audio-only file fails with no audio device (the runner has none; should play silently), a truncated MP4 times out instead of failing; no request headers yet |
 | S7 | Wider media: E7 (MKV and WebM on macOS and the web), tier B in the corpus and the bench's coverage table per backend | |
 
 ## 6. Risks

@@ -42,7 +42,9 @@ pub use backend::{
 pub use element::{Video, video};
 pub use error::{Error, ErrorKind};
 pub use fallback::Fallback;
-pub use media::{ColorInfo, ColorMatrix, ColorRange, MediaInfo, Rotation, TransferFunction};
+pub use media::{
+    ColorInfo, ColorMatrix, ColorRange, MediaInfo, Rotation, Track, TrackKind, TransferFunction,
+};
 pub use player::{PlaybackState, PlayerEvent, VideoPlayer};
 pub use source::{Location, Source};
 pub use subtitles::{Captions, Cue, SubtitleError, Subtitles, captions};

@@ -90,6 +90,9 @@ impl Session for ScriptedSession {
     fn set_looping(&mut self, looping: bool) {
         self.record(format!("looping {looping}"));
     }
+    fn select_track(&mut self, kind: gpui_av::TrackKind, index: Option<usize>) {
+        self.record(format!("track {kind:?} {index:?}"));
+    }
     fn position(&self) -> Duration {
         Duration::from_secs(7)
     }
@@ -285,6 +288,8 @@ fn commands_reach_the_session(cx: &mut TestAppContext) {
         player.set_volume(4.0, cx);
         player.set_muted(true, cx);
         player.set_looping(true, cx);
+        player.select_audio_track(1);
+        player.select_text_track(None);
 
         assert_eq!(player.volume(), 1.0);
         assert!(player.muted());
@@ -298,7 +303,9 @@ fn commands_reach_the_session(cx: &mut TestAppContext) {
             "seek 1500",
             "volume 1",
             "muted true",
-            "looping true"
+            "looping true",
+            "track Audio Some(1)",
+            "track Text None",
         ]
     );
 }

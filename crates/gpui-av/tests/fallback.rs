@@ -72,6 +72,9 @@ impl Session for ScriptedSession {
     fn set_looping(&mut self, looping: bool) {
         self.record(format!("looping {looping}"));
     }
+    fn select_track(&mut self, kind: gpui_av::TrackKind, index: Option<usize>) {
+        self.record(format!("track {kind:?} {index:?}"));
+    }
     fn position(&self) -> Duration {
         Duration::ZERO
     }
@@ -156,6 +159,7 @@ fn a_refusal_while_loading_passes_on_and_replays_commands(cx: &mut TestAppContex
 
     player.update(cx, |player, cx| {
         player.set_muted(true, cx);
+        player.select_audio_track(1);
         player.seek(Duration::from_secs(2));
         player.play();
     });
@@ -166,7 +170,7 @@ fn a_refusal_while_loading_passes_on_and_replays_commands(cx: &mut TestAppContex
     assert_eq!(first_log.borrow().dropped, 1, "the first session is let go");
     assert_eq!(
         second_log.borrow().commands,
-        ["muted true", "seek 2000", "play"]
+        ["muted true", "track Audio Some(1)", "seek 2000", "play"]
     );
     player.read_with(cx, |player, _| {
         assert_eq!(*player.state(), PlaybackState::Loading);
