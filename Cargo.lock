@@ -2038,8 +2038,8 @@ version = "0.0.0"
 dependencies = [
  "cpu-time",
  "gpui-av",
- "gpui-av-avfoundation",
  "gpui-av-gstreamer",
+ "gpui-av-platform",
  "gpui-av-web",
  "gpui-pre",
  "gpui-pre-platform",
@@ -2053,6 +2053,17 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "web-time",
+]
+
+[[package]]
+name = "gpui-av-platform"
+version = "0.0.0"
+dependencies = [
+ "gpui-av",
+ "gpui-av-avfoundation",
+ "gpui-av-gstreamer",
+ "gpui-av-web",
+ "gpui-pre",
 ]
 
 [[package]]

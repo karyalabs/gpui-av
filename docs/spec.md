@@ -215,6 +215,7 @@ crates/gpui-av                the API; depends on the GPUI core crate only
 crates/gpui-av-avfoundation   macOS backend (E1), depends on gpui-av
 crates/gpui-av-web            web backend (E3), depends on gpui-av
 crates/gpui-av-gstreamer      Linux backend (E2), depends on gpui-av
+crates/gpui-av-platform       the platform's backends in one call (S2)
 lab/                          gpui-av-lab (L0), with its test-pattern backend
 ```
 
@@ -222,8 +223,17 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   knows no backend. An app picks one at startup with
   `gpui_av::set_default_backend`, or per player with
   `VideoPlayer::with_backend`; a player created with no backend set starts
-  in `Failed`. A facade crate that picks the platform's default for the app
-  can come later without changing this.
+  in `Failed`. `gpui-av-platform` is the facade that picks for the app:
+  `gpui_av_platform::init(cx)` sets a `Fallback` over
+  `gpui_av_platform::backends()`, which on macOS is AVFoundation then
+  GStreamer, on Linux, Windows and other desktops GStreamer, and in a
+  browser the `<video>` backend without the service worker (an app that
+  needs request headers there sets `WebBackend::with_service_worker`
+  itself). Each backend is a cargo feature, on by default. On macOS
+  GStreamer is looked for on the loader's path and then in Homebrew's,
+  MacPorts' and the official framework's library folders; GStreamer on
+  macOS and Windows builds and is checked to compile, but has not been
+  played on those systems yet.
 - **`Backend` is a factory, `Session` is one piece of media.**
   `Backend::open(source, events, cx)` returns a `Session`, which takes the
   commands (`play`, `pause`, `seek`, `set_volume`, `set_muted`,
@@ -777,8 +787,8 @@ about 2026-11-24) runs beside it and blocks nothing here.
 | Step | What ships | Status |
 |---|---|---|
 | S1 | `Fallback`: backends tried in order, so media one decoder refuses plays through another (section 4.2) | Done 2026-11-15 |
-| S2 | A platform default: one crate whose `init(cx)` sets the right `Fallback` for the target (macOS: AVFoundation, then GStreamer where installed; Linux: GStreamer; web: the browser), each backend behind a cargo feature an app can turn off; the lab gains an "auto" entry | Next |
-| S3 | The public API made ready for others: docs on every item with runnable examples, a quick start in the README, `buffered`, and a check that the crates package for crates.io (publishing itself waits for Arya) | |
+| S2 | A platform default: one crate whose `init(cx)` sets the right `Fallback` for the target (macOS: AVFoundation, then GStreamer where installed; Linux: GStreamer; web: the browser), each backend behind a cargo feature an app can turn off; the lab gains an "auto" entry | Done 2026-11-15; GStreamer not yet played on macOS or Windows |
+| S3 | The public API made ready for others: docs on every item with runnable examples, a quick start in the README, `buffered`, and a check that the crates package for crates.io (publishing itself waits for Arya) | Next |
 | S4 | Subtitles: sidecar WebVTT and SRT parsed in the API crate, cues by position, and an element that draws them over the picture on the native backends (on the web the `<video>` element's own text tracks, since GPUI cannot draw over the overlay) | |
 | S5 | Audio and text tracks inside the media: list them and pick one, on each backend | |
 | S6 | Windows: a Media Foundation backend (`IMFMediaEngine`), drawn as GPUI images first, checked by a Windows run in GitHub Actions started by hand (CI stays one fast job) | |

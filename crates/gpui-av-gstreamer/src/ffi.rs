@@ -342,13 +342,46 @@ pub fn api() -> Result<&'static Api, &'static str> {
     API.get_or_init(load).as_ref().map_err(String::as_str)
 }
 
+/// Where GStreamer lives on macOS when it is not on the loader's own path:
+/// Homebrew on Apple silicon, Homebrew on Intel and MacPorts, and the
+/// official framework. The loader's default fallback path covers only
+/// `/usr/local/lib` of these.
+#[cfg(target_os = "macos")]
+const DIRECTORIES: [&str; 4] = [
+    "/opt/homebrew/lib",
+    "/usr/local/lib",
+    "/opt/local/lib",
+    "/Library/Frameworks/GStreamer.framework/Versions/1.0/lib",
+];
+#[cfg(not(target_os = "macos"))]
+const DIRECTORIES: [&str; 0] = [];
+
+/// Loads `name` from the loader's own path, or else from the first of
+/// [`DIRECTORIES`] that has it.
+fn open(name: &str) -> Result<Library, String> {
+    // SAFETY: these are the system's GLib and GStreamer libraries, whose
+    // initialisers are safe to run on any thread.
+    let first = unsafe { Library::new(name) };
+    let error = match first {
+        Ok(library) => return Ok(library),
+        Err(error) => error,
+    };
+    for directory in DIRECTORIES {
+        let path = std::path::Path::new(directory).join(name);
+        if path.exists() {
+            // SAFETY: as above.
+            return unsafe { Library::new(&path) }
+                .map_err(|error| format!("{}: {error}", path.display()));
+        }
+    }
+    Err(format!("{name}: {error}"))
+}
+
 fn load() -> Result<Api, String> {
     let mut libraries = Vec::with_capacity(NAMES.len());
     for name in NAMES {
-        // SAFETY: these are the system's GLib and GStreamer libraries, whose
-        // initialisers are safe to run on any thread.
-        let library = unsafe { Library::new(name) }
-            .map_err(|error| format!("GStreamer 1.x is not installed ({name}: {error})"))?;
+        let library =
+            open(name).map_err(|error| format!("GStreamer 1.x is not installed ({error})"))?;
         libraries.push(library);
     }
     // SAFETY: each library is the one the table's signatures describe.
