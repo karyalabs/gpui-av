@@ -30,6 +30,21 @@ pub enum PlaybackState {
 }
 
 /// What a [`VideoPlayer`] emits. Subscribe with `cx.subscribe(&player, ..)`.
+///
+/// ```no_run
+/// # use gpui::{App, AppContext, Entity};
+/// # use gpui_av::{PlaybackState, PlayerEvent, VideoPlayer};
+/// # fn example(player: &Entity<VideoPlayer>, cx: &mut App) {
+/// cx.subscribe(player, |_player, event: &PlayerEvent, _cx| match event {
+///     PlayerEvent::StateChanged(PlaybackState::Ended) => println!("done"),
+///     PlayerEvent::StateChanged(PlaybackState::Failed(error)) => {
+///         eprintln!("cannot play: {error}")
+///     }
+///     _ => {}
+/// })
+/// .detach();
+/// # }
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum PlayerEvent {
@@ -46,6 +61,25 @@ pub enum PlayerEvent {
 /// Create one with `cx.new(|cx| VideoPlayer::new(source, cx))`, draw it with
 /// [`video()`](crate::video), and control it with the methods here. The
 /// entity notifies its observers whenever its state or media info changes.
+///
+/// ```no_run
+/// # use std::time::Duration;
+/// # use gpui::{App, AppContext};
+/// # use gpui_av::{PlaybackState, Source, VideoPlayer};
+/// # fn example(cx: &mut App) {
+/// let player = cx.new(|cx| VideoPlayer::new(Source::file("film.mkv"), cx));
+/// player.update(cx, |player, cx| {
+///     player.set_muted(true, cx);
+///     player.play();
+///     player.seek(Duration::from_secs(90));
+/// });
+/// // Later, from a view that observes the player:
+/// let player = player.read(cx);
+/// if let PlaybackState::Playing = player.state() {
+///     let shown = (player.position(), player.info().duration);
+/// }
+/// # }
+/// ```
 pub struct VideoPlayer {
     backend_name: &'static str,
     presenter: &'static str,

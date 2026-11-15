@@ -10,8 +10,12 @@ use crate::{Placement, VideoPlayer};
 
 /// Draws a [`VideoPlayer`]'s picture. Size it like any other element:
 ///
-/// ```ignore
-/// video(&player).object_fit(ObjectFit::Contain).size_full()
+/// ```no_run
+/// # use gpui::{Entity, IntoElement, Styled};
+/// # use gpui_av::{ObjectFit, VideoPlayer, video};
+/// # fn render(player: &Entity<VideoPlayer>) -> impl IntoElement {
+/// video(player).object_fit(ObjectFit::Contain).size_full()
+/// # }
 /// ```
 pub fn video(player: &Entity<VideoPlayer>) -> Video {
     Video {
