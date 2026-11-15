@@ -520,6 +520,19 @@ impl Session for WebSession {
         self.shared.position()
     }
 
+    fn buffered(&self) -> Vec<std::ops::Range<Duration>> {
+        let ranges = self.shared.video.buffered();
+        (0..ranges.length())
+            .filter_map(|index| {
+                let start = ranges.start(index).ok()?;
+                let end = ranges.end(index).ok()?;
+                let start = Duration::try_from_secs_f64(start).ok()?;
+                let end = Duration::try_from_secs_f64(end).ok()?;
+                (start < end).then_some(start..end)
+            })
+            .collect()
+    }
+
     fn stats(&self) -> Stats {
         // The browser's own counters. Drift is the browser's to keep and it
         // does not report it.

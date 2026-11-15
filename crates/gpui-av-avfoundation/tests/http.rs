@@ -351,6 +351,8 @@ mod macos {
         seek: Option<Duration>,
         /// Whether the position moved on after the seek.
         advanced: bool,
+        /// What the player said was buffered once it played.
+        buffered: Vec<std::ops::Range<Duration>>,
         error: Option<(ErrorKind, String)>,
     }
 
@@ -416,6 +418,7 @@ mod macos {
         };
         if started {
             played.playing = Some(opened.elapsed());
+            played.buffered = player.read_with(cx, |player, _| player.buffered());
         }
         if started && until_failed {
             let waiting = Instant::now();
@@ -489,6 +492,14 @@ mod macos {
                 && played.seek.is_some()
                 && played.advanced,
             &played,
+        );
+        report.check(
+            "a playing clip reports what is buffered",
+            played
+                .buffered
+                .first()
+                .is_some_and(|range| range.start < range.end),
+            &played.buffered,
         );
         report.check(
             "every request carried the header and a range",

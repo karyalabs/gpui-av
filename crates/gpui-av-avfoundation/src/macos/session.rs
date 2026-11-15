@@ -20,6 +20,7 @@ use objc2_av_foundation::{
     AVURLAsset, AVVideoColorPrimaries_ITU_R_709_2, AVVideoColorPrimariesKey,
     AVVideoColorPropertiesKey, AVVideoComposition, AVVideoTransferFunction_ITU_R_709_2,
     AVVideoTransferFunctionKey, AVVideoYCbCrMatrix_ITU_R_601_4, AVVideoYCbCrMatrixKey,
+    NSValueAVFoundationExtensions,
 };
 use objc2_core_foundation::{CFRetained, CFString};
 use objc2_core_media::{CMTime, kCMTimeInvalid, kCMTimeZero};
@@ -654,6 +655,26 @@ impl Session for AvSession {
         }
         // SAFETY: a plain property read.
         info::duration(unsafe { inner.player.currentTime() }).unwrap_or_default()
+    }
+
+    fn buffered(&self) -> Vec<std::ops::Range<Duration>> {
+        let inner = self.inner.borrow();
+        if inner.loaded.is_none() {
+            return Vec::new();
+        }
+        // SAFETY: a plain property read; AVPlayerItem documents each value
+        // as holding a CMTimeRange.
+        let ranges = unsafe { inner.item.loadedTimeRanges() };
+        ranges
+            .iter()
+            .filter_map(|value| {
+                // SAFETY: as above.
+                let range = unsafe { value.CMTimeRangeValue() };
+                let start = info::duration(range.start)?;
+                let end = start + info::duration(range.duration)?;
+                (start < end).then_some(start..end)
+            })
+            .collect()
     }
 
     fn stats(&self) -> Stats {

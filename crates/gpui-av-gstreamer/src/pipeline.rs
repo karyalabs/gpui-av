@@ -2,6 +2,7 @@
 //! frames as GPUI images, and the safe calls the session makes on it.
 
 use std::ffi::{CString, c_char, c_int, c_uint, c_void};
+use std::ops::Range;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -158,6 +159,8 @@ pub(crate) struct Pipeline {
     sink: Object,
     pub shared: Arc<Shared>,
     header_setup: Option<Arc<HeaderSetup>>,
+    /// A local file: all of it is there to play.
+    local: bool,
 }
 
 /// The request headers, and whether the source playbin picked could not
@@ -171,6 +174,7 @@ impl Pipeline {
     /// Builds the pipeline for `uri` without starting it. `headers` go
     /// with every HTTP request.
     pub fn new(api: &'static Api, uri: &str, headers: &[(String, String)]) -> Result<Self, Error> {
+        let local = uri.starts_with("file:");
         let uri = c_string(uri)?;
         let headers = headers
             .iter()
@@ -267,6 +271,7 @@ impl Pipeline {
                 sink,
                 shared,
                 header_setup,
+                local,
             })
         }
     }
@@ -323,6 +328,57 @@ impl Pipeline {
             )
         };
         (known != 0 && nanos >= 0).then(|| Duration::from_nanos(nanos as u64))
+    }
+
+    /// The stretches that can play without waiting for the network: all
+    /// of a local file, otherwise what playbin's buffering query reports
+    /// (time ranges, or percentages of `duration`).
+    pub fn buffered(&self) -> Vec<Range<Duration>> {
+        let Some(duration) = self.duration() else {
+            return Vec::new();
+        };
+        if self.local {
+            return vec![Duration::ZERO..duration];
+        }
+        let gst = &self.api.gst;
+        // SAFETY: a new query we own and free; a valid element; plain out
+        // parameters, read only for indices the query says it has.
+        unsafe {
+            let query = (gst.gst_query_new_buffering)(ffi::GST_FORMAT_PERCENT);
+            if query.is_null() {
+                return Vec::new();
+            }
+            let mut ranges = Vec::new();
+            if (gst.gst_element_query)(self.playbin, query) != 0 {
+                let mut format = 0;
+                let (mut start, mut stop, mut total) = (0i64, 0i64, 0i64);
+                (gst.gst_query_parse_buffering_range)(
+                    query,
+                    &mut format,
+                    &mut start,
+                    &mut stop,
+                    &mut total,
+                );
+                for index in 0..(gst.gst_query_get_n_buffering_ranges)(query) {
+                    let (mut start, mut stop) = (0i64, 0i64);
+                    if (gst.gst_query_parse_nth_buffering_range)(
+                        query, index, &mut start, &mut stop,
+                    ) != 0
+                        && let Some(range) = to_time(format, start, stop, duration)
+                    {
+                        ranges.push(range);
+                    }
+                }
+                // An element that keeps one range reports it only here.
+                if ranges.is_empty()
+                    && let Some(range) = to_time(format, start, stop, duration)
+                {
+                    ranges.push(range);
+                }
+            }
+            (gst.gst_mini_object_unref)(query);
+            ranges
+        }
     }
 
     pub fn set_volume(&self, volume: f32) {
@@ -1143,6 +1199,32 @@ fn video_colour(colorimetry: Option<&str>, height: u32) -> gpui::VideoColour {
     }
 }
 
+/// A buffering range from a query, as times; `None` for a format this
+/// cannot turn into time, or an empty range.
+fn to_time(format: c_int, start: i64, stop: i64, duration: Duration) -> Option<Range<Duration>> {
+    if start < 0 || stop <= start {
+        return None;
+    }
+    let (start, stop) = match format {
+        ffi::GST_FORMAT_TIME => (
+            Duration::from_nanos(start as u64),
+            Duration::from_nanos(stop as u64),
+        ),
+        ffi::GST_FORMAT_PERCENT => {
+            let part = |value: i64| {
+                duration.mul_f64(
+                    value.min(ffi::GST_FORMAT_PERCENT_MAX) as f64
+                        / ffi::GST_FORMAT_PERCENT_MAX as f64,
+                )
+            };
+            (part(start), part(stop))
+        }
+        _ => return None,
+    };
+    let stop = stop.min(duration);
+    (start < stop).then_some(start..stop)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1180,5 +1262,26 @@ mod tests {
         assert_eq!(display_size(720, 576, 16, 15), (768, 576));
         assert_eq!(display_size(1920, 1080, 1, 1), (1920, 1080));
         assert_eq!(display_size(1920, 1080, 0, 1), (1920, 1080));
+    }
+
+    #[test]
+    fn buffering_ranges_become_times() {
+        let duration = Duration::from_secs(100);
+        let half = ffi::GST_FORMAT_PERCENT_MAX / 2;
+        assert_eq!(
+            to_time(ffi::GST_FORMAT_PERCENT, 0, half, duration),
+            Some(Duration::ZERO..Duration::from_secs(50))
+        );
+        assert_eq!(
+            to_time(
+                ffi::GST_FORMAT_TIME,
+                1_000_000_000,
+                200_000_000_000,
+                duration
+            ),
+            Some(Duration::from_secs(1)..duration)
+        );
+        assert_eq!(to_time(ffi::GST_FORMAT_PERCENT, half, half, duration), None);
+        assert_eq!(to_time(2, 0, 10, duration), None);
     }
 }

@@ -93,6 +93,9 @@ impl Session for ScriptedSession {
     fn position(&self) -> Duration {
         Duration::from_secs(7)
     }
+    fn buffered(&self) -> Vec<std::ops::Range<Duration>> {
+        vec![Duration::ZERO..Duration::from_secs(12)]
+    }
     fn stats(&self) -> Stats {
         Stats::new(120, 2)
     }
@@ -239,6 +242,7 @@ fn backend_events_become_state_and_player_events(cx: &mut TestAppContext) {
         assert_eq!(*player.state(), PlaybackState::Playing);
         assert_eq!(player.position(), Duration::from_secs(7));
         assert_eq!(player.stats(), Stats::new(120, 2));
+        assert_eq!(player.buffered(), [Duration::ZERO..Duration::from_secs(12)]);
     });
     // The repeated Ready is not announced twice.
     assert_eq!(
@@ -314,6 +318,7 @@ fn a_failure_is_final_and_frees_the_session(cx: &mut TestAppContext) {
     player.update(cx, |player, _| {
         assert_eq!(*player.state(), PlaybackState::Failed(error));
         assert_eq!(player.position(), Duration::ZERO);
+        assert!(player.buffered().is_empty());
         // The counts from before the failure are kept.
         assert_eq!(player.stats(), Stats::new(120, 2));
         // Commands on a failed player do nothing.

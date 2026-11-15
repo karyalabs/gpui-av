@@ -204,7 +204,7 @@ cx.subscribe(&player, |this, player, event: &PlayerEvent, cx| { /* ... */ });
 
 Commands: `play`, `pause`, `seek(Duration)`, `set_volume(f32)`, `set_muted`,
 `set_looping`. Queries: `position`, `duration`, `natural_size`, `state`,
-`info` (and `buffered`, after the POC). Events: `StateChanged`,
+`info`, `buffered`. Events: `StateChanged`,
 `InfoChanged`, `Seeked`. Controls (play button, timeline, volume, fullscreen) live in gpuicn,
 not here, so gpui-av stays a media crate.
 
@@ -284,6 +284,12 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   `Placement::clip` is the part of the element the window lets show (a
   scrolling parent may cut it); what a session paints into the window is
   clipped already, and an overlay clips itself to it.
+- **Buffered ranges.** `Session::buffered` lists the stretches that can
+  play without waiting for data, for a timeline to draw; empty means the
+  session cannot tell. A local file is buffered from start to end. macOS
+  reads `AVPlayerItem.loadedTimeRanges`, the web the element's
+  `buffered`, and GStreamer playbin's buffering query (in time, or in
+  percent of the length). The lab shows them in its stats panel.
 - **Stats.** `Session::stats` reports frames presented and dropped (zero
   for a session that cannot tell); `VideoPlayer::stats` passes them on for
   the lab's stats panel and bench, and keeps the last counts after a
@@ -788,7 +794,7 @@ about 2026-11-24) runs beside it and blocks nothing here.
 |---|---|---|
 | S1 | `Fallback`: backends tried in order, so media one decoder refuses plays through another (section 4.2) | Done 2026-11-15 |
 | S2 | A platform default: one crate whose `init(cx)` sets the right `Fallback` for the target (macOS: AVFoundation, then GStreamer where installed; Linux: GStreamer; web: the browser), each backend behind a cargo feature an app can turn off; the lab gains an "auto" entry | Done 2026-11-15; GStreamer not yet played on macOS or Windows |
-| S3 | The public API made ready for others: docs on every item with runnable examples, a quick start in the README, `buffered`, and a check that the crates package for crates.io (publishing itself waits for Arya) | Next |
+| S3 | The public API made ready for others: docs on every item with runnable examples, a quick start in the README, `buffered`, and a check that the crates package for crates.io (publishing itself waits for Arya) | `buffered` done 2026-11-15 (macOS part compiled, not yet run on a Mac); `gpui-av` packages and builds alone on stock gpui-pre; docs and examples next |
 | S4 | Subtitles: sidecar WebVTT and SRT parsed in the API crate, cues by position, and an element that draws them over the picture on the native backends (on the web the `<video>` element's own text tracks, since GPUI cannot draw over the overlay) | |
 | S5 | Audio and text tracks inside the media: list them and pick one, on each backend | |
 | S6 | Windows: a Media Foundation backend (`IMFMediaEngine`), drawn as GPUI images first, checked by a Windows run in GitHub Actions started by hand (CI stays one fast job) | |
