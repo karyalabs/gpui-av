@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::{Rc, Weak};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use gpui::{App, Corners, RenderImage, SharedString, Window, size};
@@ -20,21 +20,23 @@ use windows::Win32::Graphics::Imaging::{
 use windows::Win32::Media::MediaFoundation::{
     CLSID_MFMediaEngineClassFactory, IMFAttributes, IMFGetService, IMFMediaEngine,
     IMFMediaEngineClassFactory, IMFMediaEngineEx, IMFMediaEngineNotify, IMFMediaEngineNotify_Impl,
-    IMFTimedText, IMFTimedTextTrack, MF_MEDIA_ENGINE_CALLBACK, MF_MEDIA_ENGINE_ERR_ABORTED,
-    MF_MEDIA_ENGINE_ERR_DECODE, MF_MEDIA_ENGINE_ERR_ENCRYPTED, MF_MEDIA_ENGINE_ERR_NETWORK,
+    IMFTimedText, IMFTimedTextCue, IMFTimedTextNotify, IMFTimedTextNotify_Impl, IMFTimedTextTrack,
+    MF_MEDIA_ENGINE_CALLBACK, MF_MEDIA_ENGINE_ERR_ABORTED, MF_MEDIA_ENGINE_ERR_DECODE,
+    MF_MEDIA_ENGINE_ERR_ENCRYPTED, MF_MEDIA_ENGINE_ERR_NETWORK,
     MF_MEDIA_ENGINE_ERR_SRC_NOT_SUPPORTED, MF_MEDIA_ENGINE_EVENT_CANPLAY,
     MF_MEDIA_ENGINE_EVENT_DURATIONCHANGE, MF_MEDIA_ENGINE_EVENT_ENDED, MF_MEDIA_ENGINE_EVENT_ERROR,
     MF_MEDIA_ENGINE_EVENT_FORMATCHANGE, MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA,
     MF_MEDIA_ENGINE_EVENT_PAUSE, MF_MEDIA_ENGINE_EVENT_PLAYING, MF_MEDIA_ENGINE_EVENT_SEEKED,
     MF_MEDIA_ENGINE_EVENT_TIMEUPDATE, MF_MEDIA_ENGINE_EVENT_WAITING, MF_MEDIA_ENGINE_TIMEDTEXT,
     MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT, MF_MT_MAJOR_TYPE, MF_SD_LANGUAGE, MF_SD_STREAM_NAME,
-    MF_TIMED_TEXT_TRACK_KIND_METADATA, MF_VERSION, MFCreateAttributes, MFMediaType_Audio,
-    MFSTARTUP_FULL, MFStartup,
+    MF_TIMED_TEXT_CUE_EVENT, MF_TIMED_TEXT_CUE_EVENT_ACTIVE, MF_TIMED_TEXT_CUE_EVENT_CLEAR,
+    MF_TIMED_TEXT_ERROR_CODE, MF_TIMED_TEXT_TRACK_KIND_METADATA, MF_VERSION, MFCreateAttributes,
+    MFMediaType_Audio, MFSTARTUP_FULL, MFStartup,
 };
 use windows::Win32::System::Com::StructuredStorage::{PROPVARIANT, PropVariantClear};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
 use windows::Win32::System::Variant::{VT_CLSID, VT_LPWSTR};
-use windows::core::{BSTR, HRESULT, Interface, PWSTR, implement};
+use windows::core::{BOOL, BSTR, HRESULT, Interface, PWSTR, Ref, implement};
 
 /// Plays media with Media Foundation's media engine and draws it as GPUI
 /// images.
@@ -144,6 +146,79 @@ impl IMFMediaEngineNotify_Impl for Notify_Impl {
     }
 }
 
+/// The cues showing now, by cue id, with their track id and text: the
+/// engine hands in-band cues only to its timed text notifications, with
+/// the track's cue list left empty.
+type ActiveCues = Arc<Mutex<Vec<(u32, u32, String)>>>;
+
+#[implement(IMFTimedTextNotify)]
+struct TextNotify {
+    active: ActiveCues,
+}
+
+impl TextNotify {
+    fn active(&self) -> Option<std::sync::MutexGuard<'_, Vec<(u32, u32, String)>>> {
+        self.active.lock().ok()
+    }
+}
+
+impl IMFTimedTextNotify_Impl for TextNotify_Impl {
+    fn TrackAdded(&self, _track: u32) {}
+    fn TrackRemoved(&self, _track: u32) {}
+    fn TrackSelected(&self, _track: u32, _selected: BOOL) {}
+    fn TrackReadyStateChanged(&self, _track: u32) {}
+    fn Error(&self, code: MF_TIMED_TEXT_ERROR_CODE, extended: HRESULT, track: u32) {
+        log(&format!(
+            "timed text error {} ({:#x}) on track {track}",
+            code.0, extended.0
+        ));
+    }
+
+    fn Cue(&self, event: MF_TIMED_TEXT_CUE_EVENT, _now: f64, cue: Ref<IMFTimedTextCue>) {
+        let Some(mut active) = self.active() else {
+            return;
+        };
+        if event == MF_TIMED_TEXT_CUE_EVENT_CLEAR {
+            active.clear();
+            return;
+        }
+        let Some(cue) = cue.as_ref() else {
+            return;
+        };
+        // SAFETY: queries on the cue the engine handed in, for the length
+        // of the call; each string is copied out and freed.
+        let (id, track) = unsafe { (cue.GetId(), cue.GetTrackId()) };
+        active.retain(|(shown, _, _)| *shown != id);
+        if event == MF_TIMED_TEXT_CUE_EVENT_ACTIVE
+            && let Some(text) = unsafe { cue_text(cue) }
+        {
+            active.push((id, track, text));
+        }
+    }
+
+    fn Reset(&self) {
+        if let Some(mut active) = self.active() {
+            active.clear();
+        }
+    }
+}
+
+/// A cue's lines, joined by `\n`.
+///
+/// # Safety
+///
+/// `cue` must be a live cue from the engine.
+unsafe fn cue_text(cue: &IMFTimedTextCue) -> Option<String> {
+    // SAFETY: per the contract above; each string is copied out and freed.
+    let lines: Vec<String> = unsafe {
+        (0..cue.GetLineCount())
+            .filter_map(|line| cue.GetLine(line).ok())
+            .filter_map(|line| owned_string(line.GetText()))
+            .collect()
+    };
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
 struct MfSession {
     inner: Rc<RefCell<Inner>>,
     _events: gpui::Task<()>,
@@ -177,6 +252,8 @@ struct Inner {
     pending_audio: Option<usize>,
     /// The engine's timed text, for subtitles inside the media.
     timed: Option<IMFTimedText>,
+    /// The in-band cues showing now, kept by the timed text notifications.
+    active_cues: ActiveCues,
     /// The text tracks, by their timed text id, read when the metadata
     /// loads.
     text: Vec<(u32, Track)>,
@@ -255,6 +332,16 @@ impl MfSession {
                 .and_then(|service| service.GetService::<IMFTimedText>(&MF_MEDIA_ENGINE_TIMEDTEXT))
                 .and_then(|timed| timed.SetInBandEnabled(true).map(|()| timed))
         };
+        let active_cues = ActiveCues::default();
+        let timed = timed.and_then(|timed| {
+            let notify: IMFTimedTextNotify = TextNotify {
+                active: active_cues.clone(),
+            }
+            .into();
+            // SAFETY: registering a callback object the engine keeps a
+            // reference to.
+            unsafe { timed.RegisterNotifications(&notify) }.map(|()| timed)
+        });
         let timed = match timed {
             Ok(timed) => Some(timed),
             Err(error) => {
@@ -286,6 +373,7 @@ impl MfSession {
             audio: Vec::new(),
             pending_audio: None,
             timed,
+            active_cues,
             text: Vec::new(),
             text_on: None,
             text_wanted: None,
@@ -586,11 +674,12 @@ impl Inner {
                 .and_then(|cues| cues.GetCueByIndex(0).ok())
                 .map(|cue| (cue.GetStartTime(), cue.GetDuration(), cue.GetLineCount()));
             eprintln!(
-                "mediafoundation: text track {id} at {:.3} s: active {}, ready {:?}, error {:?}, cues {count:?}, first {first:?}",
+                "mediafoundation: text track {id} at {:.3} s: active {}, ready {:?}, error {:?}, cues {count:?}, first {first:?}, showing {:?}",
                 self.engine.GetCurrentTime(),
                 track.IsActive().as_bool(),
                 track.GetReadyState(),
                 track.GetErrorCode(),
+                self.active_cues.lock().map(|active| active.clone()).ok(),
             );
         }
     }
@@ -603,9 +692,20 @@ impl Inner {
         // copied out and freed.
         unsafe {
             let now = self.engine.GetCurrentTime();
+            let mut lines: Vec<String> = self
+                .active_cues
+                .lock()
+                .map(|active| {
+                    active
+                        .iter()
+                        .filter(|(_, track, _)| track == id)
+                        .map(|(_, _, text)| text.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            // Cues from a separate text file are in the track's cue list.
             let track: IMFTimedTextTrack = timed.GetTextTracks().ok()?.GetTrackById(*id).ok()?;
             let cues = track.GetCueList().ok()?;
-            let mut lines = Vec::new();
             for index in 0..cues.GetLength() {
                 let Ok(cue) = cues.GetCueByIndex(index) else {
                     continue;
@@ -614,14 +714,10 @@ impl Inner {
                 if !(start <= now && now < start + cue.GetDuration()) {
                     continue;
                 }
-                for line in 0..cue.GetLineCount() {
-                    if let Some(text) = cue
-                        .GetLine(line)
-                        .ok()
-                        .and_then(|line| owned_string(line.GetText()))
-                    {
-                        lines.push(text);
-                    }
+                if let Some(text) = cue_text(&cue)
+                    && !lines.contains(&text)
+                {
+                    lines.push(text);
                 }
             }
             (!lines.is_empty()).then(|| lines.join("\n"))
