@@ -36,8 +36,14 @@ demuxer or decoder library (rule: platform codecs only), and at what cost?
   -- --ignored --nocapture`. It writes `<clip>.remux/` with `index.m3u8`,
   `init.mp4`, `N.m4s` and `whole.mp4`. Checked with ffprobe (packet counts
   and times), `ffmpeg -f framemd5` (decoded frames against the source), each
-  segment decoded on its own after the init segment, GStreamer `qtdemux`,
-  and GStreamer `playbin` on the HLS playlist.
+  segment decoded on its own after the init segment, and GStreamer
+  `qtdemux`.
+- Step 2: `HlsServer` (in the crate, not on wasm) serves the playlist and
+  segments from `127.0.0.1` under a random 128-bit path, and the
+  AVFoundation backend plays `.mkv` and `.webm` files through it. Checked
+  over HTTP with `cargo run -p gpui-av-remux --example serve -- <clip>`
+  and GStreamer `playbin3` (its HLS demuxer takes only http URLs) and
+  ffmpeg's HLS demuxer.
 
 ## Result
 
@@ -49,7 +55,10 @@ demuxer or decoder library (rule: platform codecs only), and at what cost?
 - Audio stays in sync with video to the millisecond (the source's offset,
   23 ms of AAC priming or 6.5 ms of Opus pre-skip, is kept).
 - Each segment starts on a keyframe and decodes alone after the init
-  segment; GStreamer plays the HLS playlists end to end.
+  segment.
+- Over HTTP from `HlsServer`, GStreamer `playbin3` plays H.264, HEVC, VP9
+  and AV1 clips to the end (the 10-minute one too), and ffmpeg reads every
+  frame (18,000 and 25,841 on the 10-minute clip).
 - Files without Cues work (one scan of cluster headers at open).
 - Cost: 30 MB of Matroska (the 10-minute clip and the 4K60 clip) remux in
   0.08 s in a release build, all segments written, on one core of a cloud
@@ -86,10 +95,12 @@ the HLS path nor AVFoundation's own files take it.
 
 ## Next
 
-- macOS: serve `index.m3u8`, the init and media segments from a localhost
-  HTTP server inside the AVFoundation backend, and open `.mkv` and `.webm`
-  through it (AVAssetResourceLoader does not serve HLS media segments, so a
-  real server it is).
+- macOS: done in code (`HlsServer`, and the AVFoundation backend opens
+  `.mkv` and `.webm` files through it; AVAssetResourceLoader does not serve
+  HLS media segments, so a real server it is). Waiting on the Mac check:
+  tier B on AVFoundation, and whether HLS takes Opus and refuses VP9
+  cleanly so the fallback moves on. Matroska over HTTP needs a reader with
+  range requests, later.
 - Web: an MSE path in gpui-av-web for files the `<video>` element will not
   open, with the same segments.
 - Spec: E7's answer is folded into section 5 and S7.

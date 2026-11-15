@@ -22,6 +22,7 @@ karya-gpui = []
 # Everything is macOS only: on other targets this is an empty library.
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui-av.workspace = true
+gpui-av-remux.workspace = true
 gpui.workspace = true
 block2 = "0.6"
 dispatch2 = { version = "0.3", default-features = false, features = ["std", "objc2"] }

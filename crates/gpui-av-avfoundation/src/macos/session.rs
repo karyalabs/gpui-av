@@ -41,6 +41,14 @@ use super::loader::Loader;
 use super::probe::{self, HttpSource};
 use super::tracks::{Groups, Legible};
 
+/// A Matroska or WebM file played as HLS from a local server, and what the
+/// remuxer read from it: AVFoundation tells less about HLS media than about
+/// a file before the first frame.
+pub(crate) struct Remuxed {
+    pub server: gpui_av_remux::HlsServer,
+    pub hint: gpui_av::MediaInfo,
+}
+
 /// How often the session checks the player for state changes. AVFoundation
 /// reports most of them through key-value observing, which needs an
 /// Objective-C class; polling a few properties is cheaper to maintain.
@@ -63,6 +71,9 @@ pub(crate) struct AvSession {
     /// its delegate weakly, so the session keeps it. Declared after `inner`
     /// so the player goes first.
     _loader: Option<Loader>,
+    /// The local server a Matroska or WebM file plays from; after `inner`
+    /// too.
+    _remuxed: Option<gpui_av_remux::HlsServer>,
     observers: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
     _poll: Task<()>,
 }
@@ -121,12 +132,15 @@ struct Inner {
     pending_tracks: Vec<(TrackKind, Option<usize>)>,
     /// Subtitle text inside the media.
     legible: Legible,
+    /// What the remuxer read, for media played from a local server.
+    hint: Option<gpui_av::MediaInfo>,
 }
 
 impl AvSession {
     pub(crate) fn new(
         asset: Retained<AVURLAsset>,
         loader: Option<Loader>,
+        remuxed: Option<Remuxed>,
         http: Option<HttpSource>,
         events: EventSink,
         mtm: MainThreadMarker,
@@ -143,12 +157,18 @@ impl AvSession {
             item.addOutput(&output);
             let player = AVPlayer::playerWithPlayerItem(Some(&item), mtm);
             player.setActionAtItemEnd(AVPlayerActionAtItemEnd::Pause);
-            if loader.is_some() {
+            if loader.is_some() || remuxed.is_some() {
                 // Apple's advice for a delegate that loads the media: the
-                // stall prediction assumes AVFoundation's own loading.
+                // stall prediction assumes AVFoundation's own loading. A
+                // local server answers at once, so waiting only adds
+                // latency.
                 player.setAutomaticallyWaitsToMinimizeStalling(false);
             }
             (player, item, output)
+        };
+        let (server, hint) = match remuxed {
+            Some(remuxed) => (Some(remuxed.server), Some(remuxed.hint)),
+            None => (None, None),
         };
         let legible = Legible::attach(&item);
         let notes = Rc::new(Notes::default());
@@ -177,6 +197,7 @@ impl AvSession {
             groups: None,
             pending_tracks: Vec::new(),
             legible,
+            hint,
         }));
         let observers = observe(&inner, &notes);
         let weak = Rc::downgrade(&inner);
@@ -198,6 +219,7 @@ impl AvSession {
             observers,
             _poll: poll,
             _loader: loader,
+            _remuxed: server,
         }
     }
 }
@@ -416,7 +438,10 @@ impl Inner {
     }
 
     fn on_loaded(&mut self) {
-        let loaded = info::read(&self.item);
+        let mut loaded = info::read(&self.item);
+        if let Some(hint) = &self.hint {
+            info::fill_from(&mut loaded.info, hint);
+        }
         if let Some(codec) = &loaded.undecodable {
             self.fail(gpui_av::Error::new(
                 gpui_av::ErrorKind::Unsupported,
@@ -449,7 +474,6 @@ impl Inner {
         for (kind, index) in std::mem::take(&mut self.pending_tracks) {
             groups.select(&self.item, kind, index);
         }
-        let mut loaded = loaded;
         loaded.info.tracks = groups.tracks();
         self.groups = Some(groups);
         self.refresh_tracks(&mut loaded.info);

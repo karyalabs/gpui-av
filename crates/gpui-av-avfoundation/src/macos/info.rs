@@ -16,6 +16,7 @@ use objc2_core_media::{
     kCMFormatDescriptionYCbCrMatrix_ITU_R_601_4, kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2,
     kCMFormatDescriptionYCbCrMatrix_ITU_R_2020,
 };
+use objc2_foundation::NSArray;
 
 /// What the session needs to know about the media beyond [`MediaInfo`].
 pub(crate) struct Loaded {
@@ -50,7 +51,19 @@ pub(crate) fn duration(time: CMTime) -> Option<Duration> {
 /// AVFoundation has loaded the tracks, so nothing here blocks.
 pub(crate) fn read(item: &AVPlayerItem) -> Loaded {
     // SAFETY: plain property reads on a live item and its asset.
-    let (item_duration, tracks) = unsafe { (item.duration(), item.asset().tracks()) };
+    let (item_duration, mut tracks) = unsafe { (item.duration(), item.asset().tracks()) };
+    if tracks.is_empty() {
+        // An HLS asset lists no tracks; its item's tracks know theirs.
+        // SAFETY: property reads on a ready item and its tracks.
+        tracks = unsafe {
+            let from_item: Vec<_> = item
+                .tracks()
+                .iter()
+                .filter_map(|track| track.assetTrack())
+                .collect();
+            NSArray::from_retained_slice(&from_item)
+        };
+    }
     let mut info = MediaInfo {
         duration: duration(item_duration),
         ..MediaInfo::default()
@@ -92,6 +105,21 @@ pub(crate) fn read(item: &AVPlayerItem) -> Loaded {
         sample_track,
         undecodable,
     }
+}
+
+/// Fills what AVFoundation left unknown from what was read from the file
+/// before it was handed over (by the remuxer, for Matroska and WebM).
+pub(crate) fn fill_from(info: &mut MediaInfo, hint: &MediaInfo) {
+    info.duration = info.duration.or(hint.duration);
+    info.natural_size = info.natural_size.or(hint.natural_size);
+    info.has_video |= hint.has_video;
+    if info.has_audio != Some(true) {
+        info.has_audio = hint.has_audio.or(info.has_audio);
+    }
+    let color = &mut info.color;
+    color.range = color.range.or(hint.color.range);
+    color.matrix = color.matrix.or(hint.color.matrix);
+    color.transfer = color.transfer.or(hint.color.transfer);
 }
 
 /// The track's codec as its four-character code, such as `avc1`.

@@ -7,6 +7,8 @@ mod probe;
 mod session;
 mod tracks;
 
+use std::fs::File;
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use gpui::App;
@@ -25,6 +27,11 @@ use objc2_foundation::{NSString, NSURL};
 /// included, and with redirects that stay on the URL's origin (scheme, host
 /// and port); a redirect to another origin gets none of them. HLS playlists
 /// with headers are not supported yet and fail as `Unsupported`.
+///
+/// AVFoundation opens no Matroska or WebM. A file in either is remuxed to
+/// fragmented MP4 as it plays (`gpui-av-remux`, nothing is decoded) and
+/// served to AVFoundation as HLS from `127.0.0.1`, so its own decoders
+/// still play it. Matroska and WebM over HTTP are not remuxed yet.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AvFoundationBackend;
 
@@ -56,15 +63,75 @@ impl Backend for AvFoundationBackend {
                 "the AVFoundation backend must be opened on the main thread",
             )
         })?;
-        let (asset, loader) = asset_for(&source)?;
+        let (asset, loader, remuxed) = match remuxed(&source)? {
+            Some(remuxed) => {
+                let url = web_url(remuxed.server.url())?;
+                // SAFETY: `url` is a valid NSURL, and there are no options.
+                let asset =
+                    unsafe { AVURLAsset::initWithURL_options(AVURLAsset::alloc(), &url, None) };
+                (asset, None, Some(remuxed))
+            }
+            None => {
+                let (asset, loader) = asset_for(&source)?;
+                (asset, loader, None)
+            }
+        };
         let http = source.as_url().map(|url| probe::HttpSource {
             url: url.to_string(),
             headers: source.headers().to_vec(),
         });
         Ok(Box::new(session::AvSession::new(
-            asset, loader, http, events, mtm, cx,
+            asset, loader, remuxed, http, events, mtm, cx,
         )))
     }
+}
+
+/// For a file that is Matroska or WebM, its remuxer serving it as HLS.
+fn remuxed(source: &Source) -> Result<Option<session::Remuxed>, Error> {
+    let Some(path) = source.path() else {
+        return Ok(None);
+    };
+    let Ok(mut file) = File::open(path) else {
+        // `asset_for` reports a missing file.
+        return Ok(None);
+    };
+    let mut start = [0; 4];
+    if file.read_exact(&mut start).is_err() || !gpui_av_remux::is_matroska(&start) {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::Start(0)).map_err(|error| {
+        Error::new(
+            ErrorKind::Other,
+            format!("cannot read {}: {error}", path.display()),
+        )
+    })?;
+    let remuxer = gpui_av_remux::Remuxer::open(BufReader::new(file)).map_err(|error| {
+        let kind = match error {
+            gpui_av_remux::RemuxError::Invalid(_) => ErrorKind::Decode,
+            gpui_av_remux::RemuxError::Io(_) => ErrorKind::Other,
+            _ => ErrorKind::Unsupported,
+        };
+        Error::new(kind, error.to_string())
+    })?;
+    let hint = gpui_av::MediaInfo {
+        duration: Some(remuxer.duration()),
+        natural_size: remuxer
+            .video_size()
+            .map(|(width, height)| gpui::size(width, height)),
+        has_video: remuxer.video_size().is_some(),
+        has_audio: Some(remuxer.has_audio()),
+        ..Default::default()
+    };
+    let server = gpui_av_remux::HlsServer::start(remuxer).map_err(|error| {
+        Error::new(
+            ErrorKind::Other,
+            format!(
+                "cannot start the local server for {}: {error}",
+                path.display()
+            ),
+        )
+    })?;
+    Ok(Some(session::Remuxed { server, hint }))
 }
 
 /// The `AVURLAsset` for a source. A URL with request headers loads through

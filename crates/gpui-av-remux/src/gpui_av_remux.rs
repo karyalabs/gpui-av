@@ -23,6 +23,11 @@
 
 mod matroska;
 mod mp4;
+#[cfg(not(target_arch = "wasm32"))]
+mod serve;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use serve::HlsServer;
 
 use std::fmt;
 use std::io::{self, Read, Seek};
@@ -80,6 +85,12 @@ impl From<io::Error> for RemuxError {
     fn from(error: io::Error) -> Self {
         Self::Io(error)
     }
+}
+
+/// Whether `start`, the first bytes of a file, are Matroska or WebM's: an
+/// EBML header. Four bytes are enough.
+pub fn is_matroska(start: &[u8]) -> bool {
+    start.starts_with(&[0x1A, 0x45, 0xDF, 0xA3])
 }
 
 /// One media segment: where it starts and how long it plays.
@@ -314,6 +325,11 @@ impl<R: Read + Seek> Remuxer<R> {
     /// the first frame and need nothing.
     pub fn presentation_offset(&self) -> Duration {
         Duration::from_nanos(self.shift_ns.max(0) as u64)
+    }
+
+    /// Whether the output has a sound track.
+    pub fn has_audio(&self) -> bool {
+        self.outputs.iter().any(|output| output.kind == Kind::Audio)
     }
 
     /// `"webm"` or `"matroska"`.

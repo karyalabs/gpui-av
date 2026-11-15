@@ -2010,6 +2010,7 @@ dependencies = [
  "block2 0.6.2",
  "dispatch2",
  "gpui-av",
+ "gpui-av-remux",
  "gpui-pre",
  "gpui-pre-platform",
  "objc2 0.6.5",
