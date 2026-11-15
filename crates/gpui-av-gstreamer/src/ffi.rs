@@ -243,6 +243,7 @@ library!(Gst {
     gst_structure_new_empty: unsafe extern "C" fn(*const c_char) -> *mut c_void,
     gst_structure_set: unsafe extern "C" fn(*mut c_void, *const c_char, ...),
     gst_structure_free: unsafe extern "C" fn(*mut c_void),
+    gst_structure_to_string: unsafe extern "C" fn(*const c_void) -> *mut c_char,
     gst_sample_get_buffer: unsafe extern "C" fn(*mut c_void) -> *mut GstBuffer,
     gst_sample_get_caps: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
     gst_buffer_map: unsafe extern "C" fn(*mut GstBuffer, *mut GstMapInfo, c_int) -> gboolean,

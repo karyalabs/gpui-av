@@ -148,8 +148,12 @@ pub(crate) enum Event {
     AsyncDone,
     DurationChanged,
     ClockLost,
-    /// A plugin the media needs is not installed.
-    MissingPlugin(String),
+    /// GStreamer lacks a plugin for part of the media: its name, and
+    /// whether the part is the picture or the sound.
+    MissingPlugin {
+        name: String,
+        essential: bool,
+    },
     /// The video sink's count of frames dropped for being late.
     SinkDropped(u64),
     Other,
@@ -793,7 +797,18 @@ impl Pipeline {
                     let name =
                         ffi::string((gst.gst_structure_get_string)(structure, c"name".as_ptr()))
                             .unwrap_or_else(|| "a GStreamer plugin".into());
-                    Event::MissingPlugin(name)
+                    // The missing piece's caps are a GstCaps field; its
+                    // text form is enough to tell a picture or sound
+                    // decoder from a subtitle one.
+                    let text = (gst.gst_structure_to_string)(structure);
+                    let described = ffi::string(text).unwrap_or_default();
+                    if !text.is_null() {
+                        (api.glib.g_free)(text.cast());
+                    }
+                    Event::MissingPlugin {
+                        name,
+                        essential: missing_is_essential(&described),
+                    }
                 }
                 _ => Event::Other,
             }
@@ -856,6 +871,20 @@ pub(crate) fn parse_orientation(tag: &str) -> Rotation {
         "rotate-270" => Rotation::Cw270,
         _ => Rotation::None,
     }
+}
+
+/// Whether a `missing-plugin` message, as text, is for a decoder of the
+/// picture or the sound (playbin then plays the rest without it, silently),
+/// not for subtitles or anything else.
+pub(crate) fn missing_is_essential(described: &str) -> bool {
+    described.contains("type=(string)decoder")
+        && described
+            .split_once("detail=(GstCaps)")
+            .is_some_and(|(_, caps)| {
+                // Quoted when the caps hold a comma.
+                let caps = caps.trim_start_matches('"');
+                caps.starts_with("video/") || caps.starts_with("audio/")
+            })
 }
 
 /// Reads GStreamer's `colorimetry` caps field: one of its names, or
@@ -1405,6 +1434,18 @@ fn strip_markup(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_missing_picture_or_sound_decoder_is_essential() {
+        let av1 = r#"missing-plugin, type=(string)decoder, detail=(GstCaps)"video/x-av1\,\ interlace-mode\=\(string\)progressive", name=(string)"AV1\ decoder";"#;
+        assert!(super::missing_is_essential(av1));
+        let opus = r#"missing-plugin, type=(string)decoder, detail=(GstCaps)"audio/x-opus", name=(string)"Opus\ decoder";"#;
+        assert!(super::missing_is_essential(opus));
+        let bare = r#"missing-plugin, type=(string)decoder, detail=(GstCaps)video/x-av1, name=(string)"AV1\ decoder";"#;
+        assert!(super::missing_is_essential(bare));
+        let subtitles = r#"missing-plugin, type=(string)decoder, detail=(GstCaps)"application/x-ssa", name=(string)"SSA\ decoder";"#;
+        assert!(!super::missing_is_essential(subtitles));
+    }
+
     use super::*;
 
     #[test]

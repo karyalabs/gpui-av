@@ -18,6 +18,17 @@ frame rate. `play_seconds` overrides how long the bench measures the clip.
 
 When you change the script, change the manifest in the same commit.
 
+`tier-b.json` is the coverage tier: VP9 and AV1 in WebM and MP4, Matroska,
+fragmented MP4, 4K60, odd sizes, non-square pixels, full range, BT.601,
+10-bit, HDR10 and HLG, 5.1, Opus, a ten minute file and a corrupt one.
+Every clip should play everywhere; the bench ends with a coverage table
+(clip against backend) so the gaps stay visible:
+
+```sh
+scripts/make-tier-b.sh clips-b
+cargo run --release -p gpui-av-lab -- --bench corpus/tier-b.json --clips clips-b --out bench-b.json
+```
+
 ## Real films, for people
 
 The synthetic clips are for the bench: test patterns and a tone are easy

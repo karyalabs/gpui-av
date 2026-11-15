@@ -235,6 +235,16 @@ mod tests {
     }
 
     #[test]
+    fn the_tier_b_manifest_parses_and_names_each_clip_once() {
+        let manifest = Manifest::parse(include_str!("../../corpus/tier-b.json")).unwrap();
+        let mut files: Vec<_> = manifest.clips.iter().map(|clip| &clip.file).collect();
+        assert!(files.len() >= 19);
+        files.sort();
+        files.dedup();
+        assert_eq!(files.len(), manifest.clips.len());
+    }
+
+    #[test]
     fn the_tier_a_manifest_parses_and_names_each_clip_once() {
         let manifest = tier_a();
         let mut files: Vec<_> = manifest.clips.iter().map(|clip| &clip.file).collect();

@@ -584,6 +584,51 @@ pub async fn soak(
     })
 }
 
+impl Report {
+    /// A Markdown table of every clip against every backend: a tick for a
+    /// pass, otherwise the first problem. Gaps in coverage stay visible at
+    /// a glance (spec 5.1, tier B).
+    pub fn coverage(&self) -> String {
+        let mut backends: Vec<&str> = Vec::new();
+        let mut clips: Vec<&str> = Vec::new();
+        for result in &self.results {
+            if !backends.contains(&result.backend) {
+                backends.push(result.backend);
+            }
+            if !clips.contains(&result.clip.as_str()) {
+                clips.push(&result.clip);
+            }
+        }
+        let mut table = format!(
+            "| clip | {} |\n|---|{}\n",
+            backends.join(" | "),
+            "---|".repeat(backends.len())
+        );
+        for clip in clips {
+            let cells: Vec<String> = backends
+                .iter()
+                .map(|backend| {
+                    match self
+                        .results
+                        .iter()
+                        .find(|result| result.clip == clip && result.backend == *backend)
+                    {
+                        None => String::new(),
+                        Some(result) if result.pass => "✓".to_string(),
+                        Some(result) => {
+                            let problem = result.problems.first().map_or("failed", String::as_str);
+                            let short: String = problem.chars().take(60).collect();
+                            format!("✗ {}", short.replace('|', "/"))
+                        }
+                    }
+                })
+                .collect();
+            table += &format!("| {clip} | {} |\n", cells.join(" | "));
+        }
+        table
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -697,6 +742,16 @@ mod tests {
 
         assert_eq!(mismatched.outcome, "played");
         assert_eq!(mismatched.problems, ["size does not match the manifest"]);
+
+        let coverage = report.coverage();
+        let rows: Vec<&str> = coverage.lines().collect();
+        assert_eq!(rows[0], "| clip | test-pattern |");
+        assert_eq!(rows.len(), 5, "{coverage}");
+        assert!(rows[2].ends_with("| ✓ |"), "{coverage}");
+        assert!(
+            rows[4].contains("✗ size does not match the manifest"),
+            "{coverage}"
+        );
 
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["results"][0]["reported"]["width"], 320);
