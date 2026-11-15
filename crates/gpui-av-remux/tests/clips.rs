@@ -69,9 +69,15 @@ fn remuxes_clips() {
         fs::write(out.join("whole.mp4"), &whole).expect("write whole");
         let playlist = remuxer.hls_playlist("init.mp4", |index| format!("{index}.m4s"));
         fs::write(out.join("index.m3u8"), playlist).expect("write playlist");
-        let server = HlsServer::start(remuxer_for(&clip)).expect("start the server");
+        let server = HlsServer::open_in_background({
+            let clip = clip.clone();
+            move || Ok(remuxer_for(&clip))
+        })
+        .expect("start the server");
         let (status, served) = get(server.url());
         assert!(status.contains("200"), "{status}");
+        let summary = server.summary().expect("open by now");
+        assert_eq!(summary.duration, remuxer.duration());
         assert_eq!(served, playlist_text(&out));
         let (status, served) = get(&server.url().replace("index.m3u8", "init.mp4"));
         assert!(status.contains("200"), "{status}");
@@ -172,4 +178,64 @@ fn remuxes_clips_fetched_in_parts() {
         }
         println!("{}: opened after {fetches} fetches", clip.display());
     }
+}
+
+/// The same clips through a [`RangeReader`], as a URL is read on a server
+/// thread: the output must be the same bytes.
+#[test]
+#[ignore = "needs GPUI_AV_REMUX_CLIPS"]
+fn remuxes_clips_through_range_requests() {
+    use gpui_av_remux::{Fetched, RangeReader, RangeSource};
+
+    struct FileRanges(Vec<u8>, usize);
+    impl RangeSource for FileRanges {
+        fn fetch(&mut self, start: u64, length: u64) -> std::io::Result<Fetched> {
+            self.1 += 1;
+            let from = (start as usize).min(self.0.len());
+            let to = (from + length as usize).min(self.0.len());
+            Ok(Fetched {
+                bytes: self.0[from..to].to_vec(),
+                length: Some(self.0.len() as u64),
+            })
+        }
+    }
+
+    let Some(folder) = std::env::var_os("GPUI_AV_REMUX_CLIPS").map(PathBuf::from) else {
+        panic!("set GPUI_AV_REMUX_CLIPS to a folder of .mkv and .webm files");
+    };
+    for entry in fs::read_dir(&folder).expect("read the folder") {
+        let clip = entry.expect("an entry").path();
+        if !clip
+            .extension()
+            .is_some_and(|extension| extension == "mkv" || extension == "webm")
+        {
+            continue;
+        }
+        let source = FileRanges(fs::read(&clip).expect("read the clip"), 0);
+        let mut remote = Remuxer::open(RangeReader::new(source)).expect("open over ranges");
+        let mut direct = remuxer_for(&clip);
+        assert_eq!(remote.init_segment(), direct.init_segment(), "{clip:?}");
+        for index in 0..remote.segments().len() {
+            assert_eq!(
+                remote.media_segment(index).expect("remote"),
+                direct.media_segment(index).expect("direct"),
+                "{clip:?} {index}"
+            );
+        }
+    }
+}
+
+/// A file that fails to open in the background: requests get 502 and the
+/// server keeps the reason.
+#[test]
+fn a_file_that_fails_to_open_is_reported() {
+    let server = HlsServer::open_in_background(|| {
+        Remuxer::open(std::io::Cursor::new(b"not matroska at all".to_vec()))
+    })
+    .expect("start the server");
+    let (status, _) = get(server.url());
+    assert!(status.contains("502"), "{status}");
+    let failure = server.failure().expect("a failure");
+    assert_eq!(failure.kind, gpui_av_remux::FailureKind::Unsupported);
+    assert!(server.summary().is_none());
 }
