@@ -4,7 +4,9 @@
 //! holds the API and no decoder: a [`VideoPlayer`] entity, the [`video()`]
 //! element that draws it, and the public [`Backend`] trait that a decoder
 //! stack implements. Backends live in their own crates (`gpui-av-avfoundation`,
-//! `gpui-av-web`), and an app can bring its own.
+//! `gpui-av-web`, `gpui-av-gstreamer`), and an app can bring its own. A
+//! [`Fallback`] tries several backends in order, so media one platform
+//! decoder will not open can still play through another.
 //!
 //! ```ignore
 //! // Once, at startup: pick the backend new players use.
@@ -27,6 +29,7 @@
 mod backend;
 mod element;
 mod error;
+mod fallback;
 mod media;
 mod player;
 mod source;
@@ -37,6 +40,7 @@ pub use backend::{
 };
 pub use element::{Video, video};
 pub use error::{Error, ErrorKind};
+pub use fallback::Fallback;
 pub use media::{ColorInfo, ColorMatrix, ColorRange, MediaInfo, Rotation, TransferFunction};
 pub use player::{PlaybackState, PlayerEvent, VideoPlayer};
 pub use source::{Location, Source};

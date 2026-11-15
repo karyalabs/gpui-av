@@ -9,7 +9,7 @@ crate is unrelated macOS bindings.)
 
 ## 0. Start here
 
-**Where things stand (2026-11-13).** The proof of concept (section 5.2) is
+**Where things stand (2026-11-15).** The proof of concept (section 5.2) is
 done: the workspace, the `gpui-av` API crate, the macOS backend
 (`gpui-av-avfoundation`), the web backend (`gpui-av-web`) and the lab
 (`lab/`) exist (section 4.2), and the tier A corpus plays through one API
@@ -31,6 +31,8 @@ Labs repo depends on it, and nothing here needs Matty or gpuicn to build.
 
 The first thing built was the proof of concept in section 5.2: two
 platforms (macOS and the web), the real crate, the lab, and numbers.
+Since 2026-11-15 the work ships continuously as small pull requests along
+the roadmap in section 5.3, rather than pausing between experiments.
 
 **Picking up work in a new thread.** Each experiment in section 5 is sized
 for one thread. To start one, give the thread this repo and a prompt like:
@@ -106,7 +108,8 @@ Goals, in order:
    comes with a number from `experiments/`.
 4. Stay usable across GPUI snapshot bumps (section 6, risk R1).
 
-Non-goals for the first six months: Windows, camera, microphone or screen
+Windows joined the goals on 2026-11-15 (section 5.3): gpui-av is meant
+for all of GPUI's platforms. Non-goals for now: camera, microphone or screen
 capture, waveforms, scrubbing previews, a mini player, streaming protocols
 (HLS, DASH), DRM, encoding, editing, and bundling any codec.
 
@@ -228,6 +231,20 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   info, state changes, finished seeks) through an `EventSink` that works
   from any thread. The backend is the source of truth for
   `PlaybackState`; the player mirrors it.
+- **Backends can be chained.** `gpui_av::Fallback` is a backend made of
+  other backends, tried in order: one that refuses a source as
+  `Unsupported` (at once, or while loading, before the media is ready)
+  passes it to the next, which gets the commands given so far (play or
+  pause, seek, volume, mute, looping) again. Any other failure is final,
+  since a missing file or a refused token fails on every backend alike,
+  and a backend that has the media ready keeps it. Media info is held
+  back until then, so a player never shows a size from a backend that
+  gave up. When every backend refuses, the error names each one and its
+  reason. `Session::backend_name` and `Session::presenter` let a session
+  say which backend actually plays, and `VideoPlayer::backend_name`
+  reports that. This is how an app plays media its platform's own
+  decoder will not open (MKV on macOS through GStreamer, for example)
+  without code of its own.
 - **The presenter is `Session::paint`.** The `video()` element works out
   where the picture goes (object fit, from the reported natural size) and
   hands the session a `Placement` (the picture's bounds and the clip) plus
@@ -746,6 +763,27 @@ forward, none a blocker: Safari and Firefox not run, CPU during the Chrome
 soak not noted, and 3 to 4% dropped frames on the variable frame rate
 clip in Chrome, not yet explained.
 
+### 5.3 After the POC: the roadmap (from 2026-11-15)
+
+Arya, 2026-11-15: the POC is proven, so gpui-av ships continuously, one
+small pull request at a time, merged when CI is green. The aim is unchanged
+(section 2): a general-purpose media crate for every GPUI platform that
+plays the vast majority of media people have and adds no latency of its
+own. The order below puts first what makes the crate usable by anyone, then
+what widens the media it plays, then new platforms. Measurement work that
+waits on hardware (E5 step 2 needs an Intel or AMD Linux desktop, from
+about 2026-11-24) runs beside it and blocks nothing here.
+
+| Step | What ships | Status |
+|---|---|---|
+| S1 | `Fallback`: backends tried in order, so media one decoder refuses plays through another (section 4.2) | Done 2026-11-15 |
+| S2 | A platform default: one crate whose `init(cx)` sets the right `Fallback` for the target (macOS: AVFoundation, then GStreamer where installed; Linux: GStreamer; web: the browser), each backend behind a cargo feature an app can turn off; the lab gains an "auto" entry | Next |
+| S3 | The public API made ready for others: docs on every item with runnable examples, a quick start in the README, `buffered`, and a check that the crates package for crates.io (publishing itself waits for Arya) | |
+| S4 | Subtitles: sidecar WebVTT and SRT parsed in the API crate, cues by position, and an element that draws them over the picture on the native backends (on the web the `<video>` element's own text tracks, since GPUI cannot draw over the overlay) | |
+| S5 | Audio and text tracks inside the media: list them and pick one, on each backend | |
+| S6 | Windows: a Media Foundation backend (`IMFMediaEngine`), drawn as GPUI images first, checked by a Windows run in GitHub Actions started by hand (CI stays one fast job) | |
+| S7 | Wider media: E7 (MKV and WebM on macOS and the web), tier B in the corpus and the bench's coverage table per backend | |
+
 ## 6. Risks
 
 - **R1. GPUI churn.** gpui-pre ships a new snapshot about weekly, and the
@@ -772,6 +810,12 @@ clip in Chrome, not yet explained.
   against 81). Open: HLS with headers (fails as `Unsupported`).
 
 ## 7. Decisions
+
+- 2026-11-15: after the POC, gpui-av ships continuously along section 5.3
+  (Arya: "we've basically proven the POC works, so we can keep
+  shipping"), and Windows is a goal, not a non-goal. Media a platform's
+  own decoder refuses falls through to the next backend an app lists
+  (`Fallback`), on `Unsupported` only.
 
 - 2026-11-14 (E2, E5): on Linux, gpui-av draws NV12 through our GPUI
   (`karya-gpui`, karyalabs/zed#7) and keeps `RenderImage` as the fallback

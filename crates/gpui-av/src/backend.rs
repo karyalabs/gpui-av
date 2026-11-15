@@ -84,6 +84,20 @@ pub trait Session: 'static {
         Stats::default()
     }
 
+    /// The name of the backend playing the media, when it is not the one
+    /// that opened it: a session that hands the media on to another
+    /// backend (as [`Fallback`](crate::Fallback) does) names that one. The
+    /// default, `None`, means the backend that opened the session.
+    fn backend_name(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// How the frames reach the screen, when that differs from what the
+    /// opening backend's [`Backend::presenter`] says. `None` by default.
+    fn presenter(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Called when the [`video()`](crate::video) element starts showing the
     /// picture: it is on screen, has an area, and the size of the picture
     /// is known. The first [`paint`](Self::paint) follows. The value
