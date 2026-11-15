@@ -25,8 +25,9 @@ use windows::Win32::Media::MediaFoundation::{
     MF_MEDIA_ENGINE_EVENT_CANPLAY, MF_MEDIA_ENGINE_EVENT_DURATIONCHANGE,
     MF_MEDIA_ENGINE_EVENT_ENDED, MF_MEDIA_ENGINE_EVENT_ERROR, MF_MEDIA_ENGINE_EVENT_FORMATCHANGE,
     MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA, MF_MEDIA_ENGINE_EVENT_PAUSE,
-    MF_MEDIA_ENGINE_EVENT_PLAYING, MF_MEDIA_ENGINE_EVENT_SEEKED, MF_MEDIA_ENGINE_EVENT_WAITING,
-    MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT, MF_VERSION, MFCreateAttributes, MFSTARTUP_FULL, MFStartup,
+    MF_MEDIA_ENGINE_EVENT_PLAYING, MF_MEDIA_ENGINE_EVENT_SEEKED, MF_MEDIA_ENGINE_EVENT_TIMEUPDATE,
+    MF_MEDIA_ENGINE_EVENT_WAITING, MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT, MF_VERSION,
+    MFCreateAttributes, MFSTARTUP_FULL, MFStartup,
 };
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::core::{BSTR, HRESULT, Interface, implement};
@@ -257,6 +258,23 @@ impl Inner {
             let ended = unsafe { self.engine.IsEnded() }.as_bool();
             if !ended {
                 self.sink.state(PlaybackState::Paused);
+            }
+        } else if kind == MF_MEDIA_ENGINE_EVENT_TIMEUPDATE.0 {
+            // A file cut off inside its media data can also leave the
+            // engine playing nothing with its clock running on past the
+            // stated length, with no end and no error (seen on Windows
+            // Server 2025).
+            // SAFETY: plain engine queries on the main thread.
+            let (position, length) =
+                unsafe { (self.engine.GetCurrentTime(), self.engine.GetDuration()) };
+            if length.is_finite() && position - length > EARLY_END_SECONDS {
+                self.failed = true;
+                self.sink.fail(Error::new(
+                    ErrorKind::Decode,
+                    format!(
+                        "the media ran out before its stated length of {length:.1} s; the file is cut off or damaged"
+                    ),
+                ));
             }
         } else if kind == MF_MEDIA_ENGINE_EVENT_ENDED.0 {
             // A file cut off inside its media data ends where the data
