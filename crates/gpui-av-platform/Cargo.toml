@@ -1,0 +1,39 @@
+[package]
+name = "gpui-av-platform"
+description = "The right gpui-av backends for each platform, in one call."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Each backend is a feature, on by default, so an app can leave one out.
+# A backend that does not exist on the target being built is left out by
+# itself (each backend crate is empty there).
+[features]
+default = ["avfoundation", "gstreamer", "web"]
+# AVFoundation, the first choice on macOS.
+avfoundation = ["dep:gpui-av-avfoundation"]
+# GStreamer, loaded at run time where installed: the default on Linux and
+# Windows, and on macOS the fallback for media AVFoundation will not open
+# (MKV, WebM).
+gstreamer = ["dep:gpui-av-gstreamer"]
+# The browser's own `<video>` element, in a wasm build.
+web = ["dep:gpui-av-web"]
+# Draw macOS frames through Karya Labs' GPUI (spec 4.3); the app must
+# patch gpui-pre with it, as this workspace does.
+karya-gpui = ["gpui-av-avfoundation?/karya-gpui"]
+
+[dependencies]
+gpui-av.workspace = true
+gpui.workspace = true
+gpui-av-avfoundation = { workspace = true, optional = true }
+gpui-av-gstreamer = { workspace = true, optional = true }
+gpui-av-web = { workspace = true, optional = true }
+
+[lib]
+path = "src/gpui_av_platform.rs"

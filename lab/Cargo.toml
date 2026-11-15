@@ -15,14 +15,16 @@ workspace = true
 # The workspace builds on Karya Labs' GPUI (spec 4.3), so the lab draws
 # through it by default; `--no-default-features` plays the stock way.
 default = ["karya-gpui"]
-karya-gpui = ["gpui-av-avfoundation/karya-gpui"]
+karya-gpui = ["gpui-av-platform/karya-gpui"]
 # Linux frames as NV12 through Karya Labs' GPUI (E5). Off until the patched
 # gpui-pre-wgpu is published; try it with
 # `KARYA_GPUI_REF=<branch> scripts/karya-gpui build -p gpui-av-lab --features karya-gpui-linux`.
-karya-gpui-linux = ["gpui-av-gstreamer/karya-gpui"]
+karya-gpui-linux = ["dep:gpui-av-gstreamer", "gpui-av-gstreamer/karya-gpui"]
 
 [dependencies]
 gpui-av.workspace = true
+# Only for the `karya-gpui-linux` feature.
+gpui-av-gstreamer = { workspace = true, optional = true }
 gpui.workspace = true
 gpui-platform.workspace = true
 image.workspace = true
@@ -32,6 +34,10 @@ serde.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+# The platform's own backends: AVFoundation then GStreamer on macOS,
+# GStreamer elsewhere. GStreamer loads at run time, so the lab builds and
+# starts without it.
+gpui-av-platform = { workspace = true, features = ["avfoundation", "gstreamer"] }
 cpu-time.workspace = true
 memory-stats.workspace = true
 
@@ -56,17 +62,11 @@ web-sys = { workspace = true, features = [
     "console",
 ] }
 
-# GStreamer is the Linux default; it loads at run time, so the lab builds
-# and starts without it.
-[target.'cfg(not(any(target_os = "macos", target_family = "wasm")))'.dependencies]
-gpui-av-gstreamer.workspace = true
-
 # GPUI's Linux windows: X11 and Wayland.
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui-platform = { workspace = true, features = ["x11", "wayland"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-gpui-av-avfoundation.workspace = true
 # Compile GPUI's Metal shaders at run time, so building needs no Metal
 # toolchain (Xcode 26+ downloads it separately).
 gpui-platform = { workspace = true, features = ["runtime_shaders"] }
