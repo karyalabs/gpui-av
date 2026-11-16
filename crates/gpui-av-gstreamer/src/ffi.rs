@@ -368,6 +368,26 @@ const DIRECTORIES: [&str; 4] = [
 #[cfg(not(target_os = "macos"))]
 const DIRECTORIES: [&str; 0] = [];
 
+/// Where the official GStreamer installer puts its libraries on Windows:
+/// the folder its environment variable names, else the default one. The
+/// installer does not add it to `PATH`.
+#[cfg(target_os = "windows")]
+fn windows_directories() -> Vec<std::path::PathBuf> {
+    let mut directories = Vec::new();
+    for variable in [
+        "GSTREAMER_1_0_ROOT_MSVC_X86_64",
+        "GSTREAMER_1_0_ROOT_X86_64",
+    ] {
+        if let Some(root) = std::env::var_os(variable) {
+            directories.push(std::path::Path::new(&root).join("bin"));
+        }
+    }
+    directories.push(std::path::PathBuf::from(
+        r"C:\Program Files\gstreamer\1.0\msvc_x86_64\bin",
+    ));
+    directories
+}
+
 /// Loads `name` from the loader's own path, or else from the first of
 /// [`DIRECTORIES`] that has it.
 fn open(name: &str) -> Result<Library, String> {
@@ -384,6 +404,24 @@ fn open(name: &str) -> Result<Library, String> {
             // SAFETY: as above.
             return unsafe { Library::new(&path) }
                 .map_err(|error| format!("{}: {error}", path.display()));
+        }
+    }
+    #[cfg(target_os = "windows")]
+    for directory in windows_directories() {
+        let path = directory.join(name);
+        if path.exists() {
+            // The libraries GStreamer's own need sit beside it, and Windows
+            // only looks there for a library loaded by path when told to.
+            const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x8;
+            // SAFETY: as above.
+            return unsafe {
+                libloading::os::windows::Library::load_with_flags(
+                    &path,
+                    LOAD_WITH_ALTERED_SEARCH_PATH,
+                )
+            }
+            .map(Library::from)
+            .map_err(|error| format!("{}: {error}", path.display()));
         }
     }
     Err(format!("{name}: {error}"))
