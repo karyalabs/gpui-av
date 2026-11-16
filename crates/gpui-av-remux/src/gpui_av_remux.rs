@@ -39,7 +39,7 @@ pub use ranges::{Fetched, RangeReader, RangeSource};
 #[cfg(not(target_arch = "wasm32"))]
 pub use serve::{Failure, FailureKind, HlsServer, Summary};
 pub use sparse::{SparseFile, SparseReader};
-pub use text::{Mp4Cue, Mp4TextTrack, mp4_text_tracks};
+pub use text::{Mp4Colour, Mp4Cue, Mp4TextTrack, mp4_text_tracks, mp4_video_colour};
 
 use std::fmt;
 use std::io::{self, Read, Seek};

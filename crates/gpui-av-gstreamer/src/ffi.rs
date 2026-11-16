@@ -371,6 +371,22 @@ library!(GstAllocators {
     gst_dmabuf_memory_get_fd: unsafe extern "C" fn(*mut GstMemory) -> c_int,
 });
 
+/// `GstVideoColorimetry`: range, matrix, transfer and primaries.
+#[repr(C)]
+pub struct GstVideoColorimetry {
+    pub range: c_int,
+    pub matrix: c_int,
+    pub transfer: c_int,
+    pub primaries: c_int,
+}
+
+library!(GstColour {
+    gst_video_color_matrix_from_iso: unsafe extern "C" fn(c_uint) -> c_int,
+    gst_video_transfer_function_from_iso: unsafe extern "C" fn(c_uint) -> c_int,
+    gst_video_color_primaries_from_iso: unsafe extern "C" fn(c_uint) -> c_int,
+    gst_video_colorimetry_to_string: unsafe extern "C" fn(*const GstVideoColorimetry) -> *mut c_char,
+});
+
 library!(GstApp {
     gst_app_sink_set_callbacks: unsafe extern "C" fn(
         *mut c_void,
@@ -389,6 +405,8 @@ pub struct Api {
     pub gobject: GObject,
     pub gst: Gst,
     pub app: GstApp,
+    /// Colorimetry from ISO code points (GStreamer 1.18 and later).
+    pub colour: Option<GstColour>,
     /// Present when GStreamer's allocators library is installed.
     #[cfg(all(feature = "karya-gpui", target_os = "linux"))]
     pub dmabuf: Option<Dmabuf>,
@@ -568,6 +586,8 @@ fn load() -> Result<Api, String> {
             GstApp::load(&libraries[3])?,
         )
     };
+    // SAFETY: libgstvideo, which the signatures describe.
+    let colour = unsafe { GstColour::load(&libraries[4]) }.ok();
     let mut error = std::ptr::null_mut();
     // SAFETY: gst_init_check accepts null arguments and is safe to call
     // more than once; a failure fills `error`.
@@ -609,6 +629,7 @@ fn load() -> Result<Api, String> {
         gobject,
         gst,
         app,
+        colour,
         #[cfg(all(feature = "karya-gpui", target_os = "linux"))]
         dmabuf,
         version: (major, minor, micro),
@@ -648,4 +669,32 @@ pub unsafe fn string(pointer: *const c_char) -> Option<String> {
             .to_string_lossy()
             .into_owned(),
     )
+}
+
+/// GStreamer's colorimetry text (`1:3:5:1` and the like) for ISO/IEC
+/// 23091-2 code points.
+pub fn colorimetry_from_iso(
+    api: &Api,
+    primaries: u16,
+    transfer: u16,
+    matrix: u16,
+    full_range: bool,
+) -> Option<String> {
+    let colour = api.colour.as_ref()?;
+    // SAFETY: plain conversions, and a string we own and free.
+    unsafe {
+        let colorimetry = GstVideoColorimetry {
+            // GST_VIDEO_COLOR_RANGE_0_255 or _16_235.
+            range: if full_range { 1 } else { 2 },
+            matrix: (colour.gst_video_color_matrix_from_iso)(c_uint::from(matrix)),
+            transfer: (colour.gst_video_transfer_function_from_iso)(c_uint::from(transfer)),
+            primaries: (colour.gst_video_color_primaries_from_iso)(c_uint::from(primaries)),
+        };
+        let text = (colour.gst_video_colorimetry_to_string)(&colorimetry);
+        let owned = string(text);
+        if !text.is_null() {
+            (api.glib.g_free)(text as *mut c_void);
+        }
+        owned
+    }
 }

@@ -81,6 +81,63 @@ pub fn mp4_text_tracks<R: Read + Seek>(reader: &mut R) -> io::Result<Vec<Mp4Text
     Ok(tracks)
 }
 
+/// The colour a (not fragmented or fragmented) MP4's first video track
+/// states in its `colr` box (`nclx`), as ISO/IEC 23091-2 code points.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mp4Colour {
+    /// Colour primaries.
+    pub primaries: u16,
+    /// Transfer characteristics.
+    pub transfer: u16,
+    /// Matrix coefficients.
+    pub matrix: u16,
+    /// Full range (0 to 255 for 8 bits) rather than limited.
+    pub full_range: bool,
+}
+
+/// The `nclx` colour of the MP4's first video track, when it states one:
+/// GStreamer 1.24's MP4 demuxer drops its full-range flag, and its caps
+/// then win over the right ones from the H.264 or HEVC parser.
+pub fn mp4_video_colour<R: Read + Seek>(reader: &mut R) -> io::Result<Option<Mp4Colour>> {
+    let Some(moov) = find_moov(reader)? else {
+        return Ok(None);
+    };
+    for (kind, trak) in children(&moov) {
+        if kind != b"trak" {
+            continue;
+        }
+        let Some(mdia) = child(trak, b"mdia") else {
+            continue;
+        };
+        // hdlr: version and flags, pre-defined, then the handler type.
+        if child(mdia, b"hdlr").and_then(|hdlr| hdlr.get(8..12)) != Some(b"vide") {
+            continue;
+        }
+        let entry = child(mdia, b"minf")
+            .and_then(|minf| child(minf, b"stbl"))
+            .and_then(|stbl| child(stbl, b"stsd"))
+            .and_then(|stsd| children(stsd.get(8..)?).next())
+            .map(|(_, entry)| entry);
+        // A visual sample entry's own fields take 78 bytes; boxes follow.
+        let colr = entry
+            .and_then(|entry| entry.get(78..))
+            .into_iter()
+            .flat_map(children)
+            .find(|(kind, body)| *kind == b"colr" && body.starts_with(b"nclx"))
+            .map(|(_, body)| body);
+        return Ok(colr.and_then(|colr| {
+            let code = |at: usize| Some(u16::from_be_bytes(colr.get(at..at + 2)?.try_into().ok()?));
+            Some(Mp4Colour {
+                primaries: code(4)?,
+                transfer: code(6)?,
+                matrix: code(8)?,
+                full_range: colr.get(10)? & 0x80 != 0,
+            })
+        }));
+    }
+    Ok(None)
+}
+
 fn find_moov<R: Read + Seek>(reader: &mut R) -> io::Result<Option<Vec<u8>>> {
     let file_length = reader.seek(SeekFrom::End(0))?;
     let mut at = 0u64;
@@ -363,6 +420,18 @@ mod tests {
             let tracks = mp4_text_tracks(&mut io::Cursor::new(data)).unwrap_or_default();
             assert!(tracks.is_empty());
         }
+    }
+
+    /// Reads the colour of a clip (`GPUI_AV_COLOUR_CLIP`), such as tier B's
+    /// full-range H.264.
+    #[test]
+    #[ignore = "needs GPUI_AV_COLOUR_CLIP"]
+    fn reads_ffmpeg_colour() {
+        let path = std::env::var("GPUI_AV_COLOUR_CLIP").expect("GPUI_AV_COLOUR_CLIP");
+        let mut file = std::fs::File::open(path).expect("open");
+        let colour = mp4_video_colour(&mut file).expect("read");
+        eprintln!("{colour:?}");
+        assert!(colour.is_some());
     }
 
     /// Reads the clips ffmpeg writes with `-c:s mov_text`
