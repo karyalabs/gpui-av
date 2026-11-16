@@ -4,7 +4,7 @@ use std::rc::{Rc, Weak};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use gpui::{App, Corners, RenderImage, SharedString, Window, size};
+use gpui::{App, AppContext, Corners, RenderImage, SharedString, Window, size};
 use gpui_av::{
     Backend, Error, ErrorKind, EventSink, Location, MediaInfo, Placement, PlaybackState, Session,
     Source, Stats, Track, TrackKind,
@@ -12,6 +12,8 @@ use gpui_av::{
 use image::{Frame as ImageFrame, RgbaImage};
 use smallvec::SmallVec;
 use windows::Win32::Foundation::RECT;
+
+use crate::http::{LastError, Opened, UrlRanges};
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_WICPixelFormat32bppBGRA, IWICBitmap, IWICImagingFactory,
@@ -31,7 +33,7 @@ use windows::Win32::Media::MediaFoundation::{
     MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT, MF_MT_MAJOR_TYPE, MF_SD_LANGUAGE, MF_SD_STREAM_NAME,
     MF_TIMED_TEXT_CUE_EVENT, MF_TIMED_TEXT_CUE_EVENT_ACTIVE, MF_TIMED_TEXT_CUE_EVENT_CLEAR,
     MF_TIMED_TEXT_ERROR_CODE, MF_TIMED_TEXT_TRACK_KIND_METADATA, MF_VERSION, MFCreateAttributes,
-    MFMediaType_Audio, MFSTARTUP_FULL, MFStartup,
+    MFCreateMFByteStreamOnStream, MFMediaType_Audio, MFSTARTUP_FULL, MFStartup,
 };
 use windows::Win32::System::Com::StructuredStorage::{PROPVARIANT, PropVariantClear};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
@@ -41,10 +43,11 @@ use windows::core::{BOOL, BSTR, HRESULT, Interface, PWSTR, Ref, implement};
 /// Plays media with Media Foundation's media engine and draws it as GPUI
 /// images.
 ///
-/// Sources: file paths, and `http` and `https` URLs without request
-/// headers. A source with headers fails as `Unsupported`: the engine has no
-/// way to send them without a byte stream of our own, which is not written
-/// yet.
+/// Sources: file paths, and `http` and `https` URLs. A URL with request
+/// headers (a media server's token) is read through a byte stream of our
+/// own, with range requests that send the headers to the URL's origin and
+/// to no other a redirect leads to; the engine's own loading cannot send
+/// headers. That needs a server that takes range requests.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MediaFoundationBackend;
 
@@ -76,12 +79,7 @@ impl Backend for MediaFoundationBackend {
         events: EventSink,
         cx: &mut App,
     ) -> Result<Box<dyn Session>, Error> {
-        if !source.headers().is_empty() {
-            return Err(Error::new(
-                ErrorKind::Unsupported,
-                "the Media Foundation backend cannot send request headers yet",
-            ));
-        }
+        let mut ranges = None;
         let url = match source.location() {
             Location::File(path) => {
                 let path = std::path::absolute(path).map_err(|error| {
@@ -89,7 +87,17 @@ impl Backend for MediaFoundationBackend {
                 })?;
                 path.to_string_lossy().into_owned()
             }
-            Location::Url(url) => url.clone(),
+            Location::Url(url) => {
+                if !source.headers().is_empty() {
+                    let headers: Vec<(String, String)> = source
+                        .headers()
+                        .iter()
+                        .map(|(name, value)| (name.to_string(), value.to_string()))
+                        .collect();
+                    ranges = Some(UrlRanges::new(url, &headers)?);
+                }
+                url.clone()
+            }
             _ => {
                 return Err(Error::new(
                     ErrorKind::Unsupported,
@@ -98,7 +106,7 @@ impl Backend for MediaFoundationBackend {
             }
         };
         startup().map_err(|error| Error::new(ErrorKind::Unsupported, error.clone()))?;
-        MfSession::open(&url, events, cx)
+        MfSession::open(&url, ranges, events, cx)
             .map(|session| Box::new(session) as Box<dyn Session>)
             .map_err(|error| Error::new(ErrorKind::Other, format!("media engine: {error}")))
     }
@@ -222,6 +230,8 @@ unsafe fn cue_text(cue: &IMFTimedTextCue) -> Option<String> {
 struct MfSession {
     inner: Rc<RefCell<Inner>>,
     _events: gpui::Task<()>,
+    /// Opening a URL with headers: the first request, then the source.
+    _source: Option<gpui::Task<()>>,
 }
 
 struct Inner {
@@ -264,6 +274,14 @@ struct Inner {
     text_wanted: Option<usize>,
     /// A text choice made before the metadata loaded.
     pending_text: Option<Option<usize>>,
+    /// A URL with headers whose first request is still out: the engine
+    /// has no source yet.
+    waiting_for_source: bool,
+    /// Play or pause asked for while waiting for the source.
+    wanted_playing: Option<bool>,
+    /// The last failed read of our own byte stream, which says more than
+    /// the engine's error.
+    http_error: Option<LastError>,
 }
 
 /// The presentation times of the first and last frame of a run of frames,
@@ -299,7 +317,12 @@ impl FrameRun {
 }
 
 impl MfSession {
-    fn open(url: &str, sink: EventSink, cx: &mut App) -> windows::core::Result<Self> {
+    fn open(
+        url: &str,
+        ranges: Option<UrlRanges>,
+        sink: EventSink,
+        cx: &mut App,
+    ) -> windows::core::Result<Self> {
         let (sender, receiver) = async_channel::unbounded();
         // SAFETY: plain COM construction calls; every interface returned is
         // owned by the value holding it and released on drop.
@@ -351,8 +374,10 @@ impl MfSession {
                 None
             }
         };
-        // SAFETY: a plain engine command on the main thread.
-        unsafe { engine.SetSource(&BSTR::from(url))? };
+        if ranges.is_none() {
+            // SAFETY: a plain engine command on the main thread.
+            unsafe { engine.SetSource(&BSTR::from(url))? };
+        }
         // Windows 8 and later have the extended engine, with stream
         // selection.
         let streams = engine.cast::<IMFMediaEngineEx>().ok();
@@ -378,6 +403,9 @@ impl MfSession {
             text_on: None,
             text_wanted: None,
             pending_text: None,
+            waiting_for_source: ranges.is_some(),
+            wanted_playing: None,
+            http_error: None,
         }));
         inner.borrow().sink.state(PlaybackState::Loading);
         let weak: Weak<RefCell<Inner>> = Rc::downgrade(&inner);
@@ -387,9 +415,21 @@ impl MfSession {
                 inner.borrow_mut().handle(event);
             }
         });
+        let source = ranges.map(|ranges| {
+            let opening = cx.background_spawn(async move { Opened::open(ranges) });
+            let weak = Rc::downgrade(&inner);
+            let url = url.to_string();
+            cx.spawn(async move |_| {
+                let opened = opening.await;
+                if let Some(inner) = weak.upgrade() {
+                    inner.borrow_mut().set_stream(opened, &url);
+                }
+            })
+        });
         Ok(Self {
             inner,
             _events: events,
+            _source: source,
         })
     }
 }
@@ -401,6 +441,54 @@ fn seconds(value: f64) -> Option<Duration> {
 }
 
 impl Inner {
+    /// Gives the engine our byte stream for a URL with headers, once its
+    /// first request is answered.
+    fn set_stream(&mut self, opened: Result<Opened, Error>, url: &str) {
+        self.waiting_for_source = false;
+        if self.failed {
+            return;
+        }
+        let opened = match opened {
+            Ok(opened) => opened,
+            Err(error) => {
+                self.failed = true;
+                self.sink.fail(error);
+                return;
+            }
+        };
+        let Some(streams) = &self.streams else {
+            self.failed = true;
+            self.sink.fail(Error::new(
+                ErrorKind::Unsupported,
+                "request headers need the media engine of Windows 8 or later",
+            ));
+            return;
+        };
+        let last_error = LastError::default();
+        self.http_error = Some(last_error.clone());
+        let stream = opened.into_stream(last_error);
+        // SAFETY: COM calls on the main thread with live objects; the
+        // engine keeps its own reference to the byte stream.
+        let set = unsafe {
+            MFCreateMFByteStreamOnStream(&stream)
+                .and_then(|bytes| streams.SetSourceFromByteStream(&bytes, &BSTR::from(url)))
+        };
+        if let Err(error) = set {
+            self.failed = true;
+            self.sink.fail(Error::new(
+                ErrorKind::Other,
+                format!("media engine: {error}"),
+            ));
+            return;
+        }
+        if self.wanted_playing.take() == Some(true) {
+            // SAFETY: a plain engine command on the main thread.
+            if let Err(error) = unsafe { self.engine.Play() } {
+                log(&format!("play failed: {error}"));
+            }
+        }
+    }
+
     fn handle(&mut self, event: EngineEvent) {
         if self.failed {
             return;
@@ -509,8 +597,13 @@ impl Inner {
             self.sink.seeked(position);
         } else if kind == MF_MEDIA_ENGINE_EVENT_ERROR.0 {
             self.failed = true;
-            self.sink
-                .fail(error(event.param1, HRESULT(event.param2 as i32)));
+            let read_error = self
+                .http_error
+                .as_ref()
+                .and_then(|last| last.lock().ok().and_then(|mut last| last.take()));
+            self.sink.fail(
+                read_error.unwrap_or_else(|| error(event.param1, HRESULT(event.param2 as i32))),
+            );
         }
     }
 
@@ -985,7 +1078,7 @@ unsafe fn owned_string(string: windows::core::Result<PWSTR>) -> Option<String> {
     text.filter(|text| !text.is_empty())
 }
 
-fn log(message: &str) {
+pub(crate) fn log(message: &str) {
     eprintln!("gpui-av-mediafoundation: {message}");
 }
 
@@ -1014,15 +1107,25 @@ impl Session for MfSession {
     }
 
     fn play(&mut self) {
+        let mut inner = self.inner.borrow_mut();
+        if inner.waiting_for_source {
+            inner.wanted_playing = Some(true);
+            return;
+        }
         // SAFETY: a plain engine command on the main thread.
-        if let Err(error) = unsafe { self.inner.borrow().engine.Play() } {
+        if let Err(error) = unsafe { inner.engine.Play() } {
             log(&format!("play failed: {error}"));
         }
     }
 
     fn pause(&mut self) {
+        let mut inner = self.inner.borrow_mut();
+        if inner.waiting_for_source {
+            inner.wanted_playing = Some(false);
+            return;
+        }
         // SAFETY: as above.
-        if let Err(error) = unsafe { self.inner.borrow().engine.Pause() } {
+        if let Err(error) = unsafe { inner.engine.Pause() } {
             log(&format!("pause failed: {error}"));
         }
     }

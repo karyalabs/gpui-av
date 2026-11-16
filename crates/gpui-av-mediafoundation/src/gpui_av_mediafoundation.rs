@@ -11,13 +11,19 @@
 //! gpui_av::set_default_backend(Rc::new(MediaFoundationBackend::new()), cx);
 //! ```
 //!
-//! Sources with request headers are refused as `Unsupported` for now, so a
-//! [`gpui_av::Fallback`] passes them on to the next backend.
+//! URLs with request headers (a media server's token) are read through a
+//! byte stream of ours, with WinHTTP range requests, since the engine's own
+//! loading cannot send headers. The headers go only to the URL's origin,
+//! never to another one a redirect leads to.
 //!
 //! On other targets this crate is empty.
 
 #[cfg(windows)]
 mod engine;
+#[cfg(windows)]
+mod http;
+#[cfg(any(windows, test))]
+mod url;
 
 #[cfg(windows)]
 pub use engine::MediaFoundationBackend;
