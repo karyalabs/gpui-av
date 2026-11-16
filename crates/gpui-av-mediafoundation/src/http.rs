@@ -183,11 +183,14 @@ impl UrlRanges {
                 WINHTTP_OPTION_DISABLE_FEATURE,
                 Some(&WINHTTP_DISABLE_REDIRECTS.to_ne_bytes()),
             )?;
-            WinHttpAddRequestHeaders(
-                request.0.as_ptr(),
-                &lines,
-                WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE,
-            )?;
+            // An empty slice's pointer dangles, and WinHTTP reads it anyway.
+            if !lines.is_empty() {
+                WinHttpAddRequestHeaders(
+                    request.0.as_ptr(),
+                    &lines,
+                    WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE,
+                )?;
+            }
             WinHttpSendRequest(request.0.as_ptr(), None, None, 0, 0, 0)?;
             WinHttpReceiveResponse(request.0.as_ptr(), std::ptr::null_mut())?;
             let mut status = 0u32;
