@@ -286,3 +286,22 @@ fn events_from_a_backend_passed_over_are_ignored(cx: &mut TestAppContext) {
         assert_eq!(*player.state(), PlaybackState::Loading);
     });
 }
+
+#[gpui::test]
+fn buffering_before_the_media_is_ready_still_lets_it_pass_on(cx: &mut TestAppContext) {
+    let (first, first_log) = backend("first", None);
+    let (second, second_log) = backend("second", None);
+    let player = player(vec![first, second], cx);
+
+    player.update(cx, |player, _| player.play());
+    sink(&first_log).state(PlaybackState::Buffering);
+    sink(&first_log).fail(unsupported("no decoder"));
+    cx.run_until_parked();
+
+    assert_eq!(first_log.borrow().dropped, 1, "the first session is let go");
+    assert_eq!(second_log.borrow().commands, ["play"]);
+    player.read_with(cx, |player, _| {
+        assert_eq!(*player.state(), PlaybackState::Loading);
+        assert_eq!(player.backend_name(), "second");
+    });
+}
