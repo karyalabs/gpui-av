@@ -5,8 +5,10 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
-use gpui::{App, Pixels, Point, Size, Window, point, size};
-use gpui_av::{Error, ErrorKind, EventSink, MediaInfo, Placement, PlaybackState, Session, Stats};
+use gpui::{App, Pixels, Point, SharedString, Size, Window, point, size};
+use gpui_av::{
+    Error, ErrorKind, EventSink, MediaInfo, Placement, PlaybackState, Session, Stats, TrackKind,
+};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
@@ -14,6 +16,7 @@ use wasm_bindgen_futures::{JsFuture, spawn_local};
 use super::mse;
 use super::probe::probe;
 use super::proxy::Proxy;
+use super::tracks;
 use crate::errors;
 use crate::layout::{Canvas, Layout};
 
@@ -80,6 +83,8 @@ struct Shared {
     progress: Cell<Option<(f64, f64)>>,
     /// The properties last reported.
     info: RefCell<Option<MediaInfo>>,
+    /// The text track the app turned on, by index among the text tracks.
+    text_on: Cell<Option<usize>>,
     /// The placement last applied; empty while the element is hidden.
     css: RefCell<String>,
     /// What the element was last painted with, while it shows.
@@ -164,6 +169,7 @@ impl WebSession {
             seeks: Cell::new(0),
             progress: Cell::new(None),
             info: RefCell::new(None),
+            text_on: Cell::new(None),
             css: RefCell::new(String::new()),
             painted: RefCell::new(None),
         });
@@ -280,12 +286,17 @@ impl Shared {
         let (width, height) = (self.video.video_width(), self.video.video_height());
         let natural_size = (width > 0 && height > 0).then(|| size(width, height));
         let has_video = natural_size.is_some();
+        let (tracks, audio_track) = tracks::read(&self.video);
+        let text_track = tracks::apply_text(&self.video, self.text_on.get());
         MediaInfo {
             duration,
             natural_size,
             has_video,
             // Media without a picture that still loaded is audio.
             has_audio: self.has_audio().or((!has_video).then_some(true)),
+            tracks,
+            audio_track,
+            text_track,
             ..MediaInfo::default()
         }
     }
@@ -593,6 +604,20 @@ impl Session for WebSession {
 
     fn position(&self) -> Duration {
         self.shared.position()
+    }
+
+    fn select_track(&mut self, kind: TrackKind, index: Option<usize>) {
+        match (kind, index) {
+            (TrackKind::Audio, Some(index)) => tracks::select_audio(&self.shared.video, index),
+            (TrackKind::Text, index) => self.shared.text_on.set(index),
+            _ => return,
+        }
+        self.shared.refresh_info();
+    }
+
+    fn text(&self) -> Option<SharedString> {
+        let index = self.shared.text_on.get()?;
+        tracks::text(&self.shared.video, index).map(SharedString::from)
     }
 
     fn buffered(&self) -> Vec<std::ops::Range<Duration>> {

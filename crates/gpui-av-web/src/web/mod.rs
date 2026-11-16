@@ -4,6 +4,7 @@ mod mse;
 mod probe;
 mod proxy;
 mod session;
+mod tracks;
 
 use std::rc::Rc;
 
