@@ -250,6 +250,18 @@ fn strip_markup(line: &str) -> String {
 /// While the picture plays, the window draws every frame, so the text
 /// follows the position. With a backend whose picture shows by itself (the
 /// web's), GPUI cannot draw over it at all.
+///
+/// ```no_run
+/// # use gpui::{Entity, IntoElement, ParentElement, Styled, div};
+/// # use gpui_av::{VideoPlayer, captions, video};
+/// # fn example(player: &Entity<VideoPlayer>) -> impl IntoElement {
+/// div()
+///     .relative()
+///     .size_full()
+///     .child(video(player).size_full())
+///     .child(captions(player).bottom_8())
+/// # }
+/// ```
 pub fn captions(player: &Entity<VideoPlayer>) -> Captions {
     Captions {
         player: player.clone(),
