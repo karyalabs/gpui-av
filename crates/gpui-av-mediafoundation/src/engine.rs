@@ -290,8 +290,12 @@ struct Inner {
     /// The text tracks, by their timed text id, read when the metadata
     /// loads.
     text: Vec<(u32, Track)>,
-    /// The text track on, by index into `text`.
+    /// The text track on, by index into `text`, or into `own_text` when
+    /// `text` is empty.
     text_on: Option<usize>,
+    /// Text tracks read from the file ourselves, shown when the engine
+    /// lists none: Media Foundation's MP4 source drops 3GPP timed text.
+    own_text: Vec<(Track, Vec<gpui_av_remux::Mp4Cue>)>,
     /// The text track the app chose, kept for tracks the engine lists
     /// late: in-band text tracks can appear after the metadata loads.
     text_wanted: Option<usize>,
@@ -431,6 +435,7 @@ impl MfSession {
             active_cues,
             text: Vec::new(),
             text_on: None,
+            own_text: Vec::new(),
             text_wanted: None,
             pending_text: None,
             waiting_for_source: ranges.is_some(),
@@ -461,21 +466,45 @@ impl MfSession {
         let length = file.map(|path| {
             let reading = cx.background_spawn(async move {
                 let file = std::fs::File::open(&path)?;
-                gpui_av_remux::fragmented_mp4_length(&mut std::io::BufReader::new(file))
+                let mut reader = std::io::BufReader::new(file);
+                let length = gpui_av_remux::fragmented_mp4_length(&mut reader)?;
+                let text = gpui_av_remux::mp4_text_tracks(&mut reader).unwrap_or_else(|error| {
+                    log(&format!("reading the MP4's text tracks failed: {error}"));
+                    Vec::new()
+                });
+                std::io::Result::Ok((length, text))
             });
             let weak = Rc::downgrade(&inner);
             cx.spawn(async move |_| {
-                let length = match reading.await {
-                    Ok(length) => length,
+                let (length, text) = match reading.await {
+                    Ok(read) => read,
                     Err(error) => {
                         log(&format!("reading the fragments' length failed: {error}"));
-                        None
+                        (None, Vec::new())
                     }
                 };
-                if let (Some(length), Some(inner)) = (length, weak.upgrade()) {
+                if length.is_none() && text.is_empty() {
+                    return;
+                }
+                if let Some(inner) = weak.upgrade() {
                     let mut inner = inner.borrow_mut();
-                    inner.fragments_length = Some(length);
+                    inner.fragments_length = length;
+                    inner.own_text = text
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, track)| {
+                            let mut entry = Track::new(TrackKind::Text, index);
+                            if let Some(language) = track.language {
+                                entry = entry.with_language(language);
+                            }
+                            (entry, track.cues)
+                        })
+                        .collect();
                     if inner.loaded && !inner.failed {
+                        if inner.text.is_empty() {
+                            let wanted = inner.text_wanted;
+                            inner.select_text(wanted);
+                        }
                         inner.report_info();
                     }
                 }
@@ -692,6 +721,14 @@ impl Inner {
                     .iter()
                     .chain(self.text.iter())
                     .map(|(_, track)| track.clone())
+                    .chain(
+                        self.text
+                            .is_empty()
+                            .then_some(&self.own_text)
+                            .into_iter()
+                            .flatten()
+                            .map(|(track, _)| track.clone()),
+                    )
                     .collect(),
                 audio_track: self.audio_track(),
                 text_track: self.text_on,
@@ -793,6 +830,10 @@ impl Inner {
     /// Turns on the text track at `index`, or every one off for `None`.
     fn select_text(&mut self, index: Option<usize>) {
         self.text_wanted = index;
+        if self.text.is_empty() && !self.own_text.is_empty() {
+            self.text_on = index.filter(|index| *index < self.own_text.len());
+            return;
+        }
         let Some(timed) = &self.timed else {
             return;
         };
@@ -841,6 +882,17 @@ impl Inner {
 
     /// The text of the cues on screen now, on the text track that is on.
     fn current_text(&self) -> Option<String> {
+        if self.text.is_empty() {
+            let (_, cues) = self.own_text.get(self.text_on?)?;
+            // SAFETY: a plain engine query on the main thread.
+            let now = seconds(unsafe { self.engine.GetCurrentTime() })?;
+            let lines: Vec<&str> = cues
+                .iter()
+                .filter(|cue| cue.start <= now && now < cue.end)
+                .map(|cue| cue.text.as_str())
+                .collect();
+            return (!lines.is_empty()).then(|| lines.join("\n"));
+        }
         let timed = self.timed.as_ref()?;
         let (id, _) = self.text.get(self.text_on?)?;
         // SAFETY: timed text queries on the main thread; each string is

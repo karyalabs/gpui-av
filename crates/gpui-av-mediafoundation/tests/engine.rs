@@ -240,10 +240,34 @@ mod windows_test {
                 chosen,
             );
             // Media Foundation's MP4 source hands on no 3GPP text stream
-            // (seen on Windows Server 2025), so the MP4's subtitles are
-            // noted, not required; the Matroska clip below must show them.
-            let text_tracks = text_track_count(&player, cx);
-            println!("info subtitle tracks listed in the MP4: {text_tracks}");
+            // (seen on Windows Server 2025): the backend reads them itself,
+            // in the background.
+            let started = Instant::now();
+            let mut text_tracks = 0;
+            while started.elapsed() < Duration::from_secs(3) && text_tracks == 0 {
+                text_tracks = text_track_count(&player, cx);
+                wait(cx, 50).await;
+            }
+            report.check(
+                "the MP4's subtitle track is listed",
+                text_tracks == 1,
+                text_tracks,
+            );
+            player.update(cx, |player, _| player.select_text_track(Some(0)));
+            let started = Instant::now();
+            let mut text = None;
+            while started.elapsed() < Duration::from_secs(8) {
+                text = player.read_with(cx, |player, _| player.text());
+                if text.is_some() {
+                    break;
+                }
+                wait(cx, 50).await;
+            }
+            report.check(
+                "the MP4's subtitles show once its text track is on",
+                text.as_deref() == Some("The first line"),
+                &text,
+            );
             cx.update(|_| drop(player));
         }
 

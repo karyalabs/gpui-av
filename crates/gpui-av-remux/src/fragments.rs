@@ -67,7 +67,10 @@ enum Moov {
 }
 
 /// A box's type, header size and whole size, or `None` past the end.
-fn box_header<R: Read>(reader: &mut R, left: u64) -> io::Result<Option<([u8; 4], u64, u64)>> {
+pub(crate) fn box_header<R: Read>(
+    reader: &mut R,
+    left: u64,
+) -> io::Result<Option<([u8; 4], u64, u64)>> {
     let mut start = [0u8; 8];
     reader.read_exact(&mut start)?;
     let kind = [start[4], start[5], start[6], start[7]];
@@ -87,14 +90,14 @@ fn box_header<R: Read>(reader: &mut R, left: u64) -> io::Result<Option<([u8; 4],
     Ok(Some((kind, header, size)))
 }
 
-fn read_body<R: Read>(reader: &mut R, length: u64) -> io::Result<Vec<u8>> {
+pub(crate) fn read_body<R: Read>(reader: &mut R, length: u64) -> io::Result<Vec<u8>> {
     let mut body = vec![0u8; length as usize];
     reader.read_exact(&mut body)?;
     Ok(body)
 }
 
 /// The child boxes of `data`, as (type, body).
-fn children(data: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> {
+pub(crate) fn children(data: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> {
     let mut at = 0usize;
     std::iter::from_fn(move || {
         let start = data.get(at..at + 8)?;
@@ -117,22 +120,22 @@ fn children(data: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> {
     })
 }
 
-fn child<'a>(data: &'a [u8], kind: &[u8; 4]) -> Option<&'a [u8]> {
+pub(crate) fn child<'a>(data: &'a [u8], kind: &[u8; 4]) -> Option<&'a [u8]> {
     children(data)
         .find(|(found, _)| found == kind)
         .map(|(_, body)| body)
 }
 
-fn u32_at(data: &[u8], at: usize) -> Option<u32> {
+pub(crate) fn u32_at(data: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_be_bytes(data.get(at..at + 4)?.try_into().ok()?))
 }
 
-fn u64_at(data: &[u8], at: usize) -> Option<u64> {
+pub(crate) fn u64_at(data: &[u8], at: usize) -> Option<u64> {
     Some(u64::from_be_bytes(data.get(at..at + 8)?.try_into().ok()?))
 }
 
 /// A full box's version and flags.
-fn version_flags(data: &[u8]) -> Option<(u8, u32)> {
+pub(crate) fn version_flags(data: &[u8]) -> Option<(u8, u32)> {
     let word = u32_at(data, 0)?;
     Some(((word >> 24) as u8, word & 0x00FF_FFFF))
 }
