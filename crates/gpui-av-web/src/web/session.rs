@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use gpui::{App, Pixels, Point, SharedString, Size, Window, point, size};
 use gpui_av::{
-    Error, ErrorKind, EventSink, MediaInfo, Placement, PlaybackState, Session, Stats, TrackKind,
+    Error, ErrorKind, EventSink, MediaInfo, Placement, PlaybackState, Session, Stats, Subtitles,
+    TrackKind,
 };
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
@@ -85,6 +86,8 @@ struct Shared {
     info: RefCell<Option<MediaInfo>>,
     /// The text track the app turned on, by index among the text tracks.
     text_on: Cell<Option<usize>>,
+    /// The text track holding sidecar subtitles, while there are some.
+    sidecar: RefCell<Option<JsValue>>,
     /// The placement last applied; empty while the element is hidden.
     css: RefCell<String>,
     /// What the element was last painted with, while it shows.
@@ -170,6 +173,7 @@ impl WebSession {
             progress: Cell::new(None),
             info: RefCell::new(None),
             text_on: Cell::new(None),
+            sidecar: RefCell::new(None),
             css: RefCell::new(String::new()),
             painted: RefCell::new(None),
         });
@@ -613,6 +617,24 @@ impl Session for WebSession {
             _ => return,
         }
         self.shared.refresh_info();
+    }
+
+    fn set_subtitles(&mut self, subtitles: Option<&Subtitles>) {
+        if let Some(old) = self.shared.sidecar.borrow_mut().take() {
+            tracks::remove_sidecar(&old);
+        }
+        let added =
+            subtitles.and_then(|subtitles| tracks::add_sidecar(&self.shared.video, subtitles));
+        if subtitles.is_some() && added.is_none() {
+            web_sys::console::warn_1(
+                &"gpui-av: this browser cannot show subtitles on a video".into(),
+            );
+        }
+        *self.shared.sidecar.borrow_mut() = added;
+    }
+
+    fn draws_subtitles(&self) -> bool {
+        true
     }
 
     fn text(&self) -> Option<SharedString> {

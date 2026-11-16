@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use gpui::{App, Bounds, Global, Pixels, SharedString, Window};
 
-use crate::{Error, MediaInfo, PlaybackState, Source, TrackKind};
+use crate::{Error, MediaInfo, PlaybackState, Source, Subtitles, TrackKind};
 
 /// A decoder stack that can play media.
 ///
@@ -169,6 +169,20 @@ pub trait Session: 'static {
     /// element shows it.
     fn text(&self) -> Option<SharedString> {
         None
+    }
+
+    /// Takes sidecar subtitles to draw itself, for a session whose picture
+    /// GPUI cannot draw over (a browser's media element), or `None` to take
+    /// them away. Such a session also returns `true` from
+    /// [`draws_subtitles`](Self::draws_subtitles). The default ignores
+    /// them: [`captions()`](crate::captions) draws them over the picture.
+    fn set_subtitles(&mut self, _subtitles: Option<&Subtitles>) {}
+
+    /// Whether the session draws the subtitles given to
+    /// [`set_subtitles`](Self::set_subtitles) itself, so that
+    /// [`captions()`](crate::captions) leaves them out. `false` by default.
+    fn draws_subtitles(&self) -> bool {
+        false
     }
 
     /// The current position on the session's clock (the audio clock, where

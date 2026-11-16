@@ -9,7 +9,7 @@ use std::time::Duration;
 use gpui::{App, SharedString, Window};
 
 use crate::backend::{Backend, BackendEvent, EventSink, Placement, Session, Stats};
-use crate::{Error, ErrorKind, PlaybackState, Source, TrackKind};
+use crate::{Error, ErrorKind, PlaybackState, Source, Subtitles, TrackKind};
 
 /// Plays each source with the first of several backends that can.
 ///
@@ -99,6 +99,7 @@ struct Wanted {
     looping: Option<bool>,
     audio_track: Option<usize>,
     text_track: Option<Option<usize>>,
+    subtitles: Option<Option<Subtitles>>,
 }
 
 struct Current {
@@ -245,6 +246,9 @@ impl Wanted {
         if let Some(index) = self.text_track {
             session.select_track(TrackKind::Text, index);
         }
+        if let Some(subtitles) = &self.subtitles {
+            session.set_subtitles(subtitles.as_ref());
+        }
         if let Some(position) = self.seek {
             session.seek(position);
         }
@@ -338,6 +342,18 @@ impl Session for FallbackSession {
 
     fn text(&self) -> Option<SharedString> {
         self.with(|session| session.text()).flatten()
+    }
+
+    fn set_subtitles(&mut self, subtitles: Option<&Subtitles>) {
+        self.command(
+            |wanted| wanted.subtitles = Some(subtitles.cloned()),
+            |session| session.set_subtitles(subtitles),
+        );
+    }
+
+    fn draws_subtitles(&self) -> bool {
+        self.with(|session| session.draws_subtitles())
+            .unwrap_or(false)
     }
 
     fn select_track(&mut self, kind: TrackKind, index: Option<usize>) {
