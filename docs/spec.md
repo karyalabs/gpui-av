@@ -431,11 +431,11 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   needs our own `IMFByteStream`. Not reported yet: dropped frames,
   colour, rotation. Zero-copy (a D3D11 texture shared with GPUI's
   renderer) is the later step, as E5 is for Linux. Its tests run on a
-  Windows runner in GitHub Actions, only by hand
-  (`.github/workflows/windows.yml`) and sparingly, never as part of `ci`:
-  the repository is private, so Windows minutes count double against the
-  plan's included minutes, which automatic Windows runs used up on
-  2026-11-16. Several Windows changes are batched into one run.
+  Windows runner in GitHub Actions when this crate or `gpui-av-remux`
+  changes, or by hand (`.github/workflows/windows.yml`), never as part of
+  `ci` and never blocking a merge. While the repository was private these
+  runs used up the plan's included minutes (2026-11-16); it is public now,
+  so hosted runners cost none.
 - **The lab on Linux.** The lab opens GPUI windows on X11 and Wayland and
   defaults to the GStreamer backend. In the cloud sandbox it runs under
   Xvfb with Mesa's llvmpipe, which draws about 21 window frames a second:
