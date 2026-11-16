@@ -2027,6 +2027,7 @@ name = "gpui-av-gstreamer"
 version = "0.0.0"
 dependencies = [
  "gpui-av",
+ "gpui-av-remux",
  "gpui-pre",
  "image",
  "libloading",

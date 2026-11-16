@@ -203,6 +203,98 @@ library!(GObject {
     g_signal_emit_by_name: unsafe extern "C" fn(*mut c_void, *const c_char, ...),
 });
 
+library!(Soup {
+    soup_session_new: unsafe extern "C" fn() -> *mut c_void,
+    soup_session_remove_feature_by_type: unsafe extern "C" fn(*mut c_void, usize),
+    soup_content_decoder_get_type: unsafe extern "C" fn() -> usize,
+    soup_session_send: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut *mut GError) -> *mut c_void,
+    soup_message_new: unsafe extern "C" fn(*const c_char, *const c_char) -> *mut c_void,
+    soup_message_set_flags: unsafe extern "C" fn(*mut c_void, c_uint),
+    soup_message_get_status: unsafe extern "C" fn(*mut c_void) -> c_uint,
+    soup_message_get_request_headers: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
+    soup_message_get_response_headers: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
+    soup_message_headers_append: unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char),
+    soup_message_headers_get_one: unsafe extern "C" fn(*mut c_void, *const c_char) -> *const c_char,
+});
+
+library!(Gio {
+    g_input_stream_read: unsafe extern "C" fn(*mut c_void, *mut c_void, usize, *mut c_void, *mut *mut GError) -> isize,
+    g_input_stream_close: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut *mut GError) -> gboolean,
+});
+
+library!(GObjectRef {
+    g_object_unref: unsafe extern "C" fn(*mut c_void),
+});
+
+/// libsoup 3, for fetching with headers ourselves (see `soup`).
+pub struct SoupApi {
+    pub soup: Soup,
+    pub gio: Gio,
+    pub gobject: GObjectRef,
+    pub glib: Glib,
+    _libraries: Vec<Library>,
+}
+
+// SAFETY: function pointers into C libraries that are never unloaded;
+// the `soup` module keeps each session on one thread.
+unsafe impl Send for SoupApi {}
+// SAFETY: as above; nothing in the table changes after loading.
+unsafe impl Sync for SoupApi {}
+
+#[cfg(target_os = "linux")]
+const SOUP_NAMES: [&str; 4] = [
+    "libsoup-3.0.so.0",
+    "libgio-2.0.so.0",
+    "libgobject-2.0.so.0",
+    "libglib-2.0.so.0",
+];
+#[cfg(target_os = "macos")]
+const SOUP_NAMES: [&str; 4] = [
+    "libsoup-3.0.0.dylib",
+    "libgio-2.0.0.dylib",
+    "libgobject-2.0.0.dylib",
+    "libglib-2.0.0.dylib",
+];
+#[cfg(target_os = "windows")]
+const SOUP_NAMES: [&str; 4] = [
+    "soup-3.0-0.dll",
+    "gio-2.0-0.dll",
+    "gobject-2.0-0.dll",
+    "glib-2.0-0.dll",
+];
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+const SOUP_NAMES: [&str; 4] = [
+    "libsoup-3.0.so",
+    "libgio-2.0.so",
+    "libgobject-2.0.so",
+    "libglib-2.0.so",
+];
+
+/// Loads libsoup 3 once per process, after GStreamer (whose folders it
+/// shares).
+pub fn soup_api() -> Result<&'static SoupApi, &'static str> {
+    static SOUP: OnceLock<Result<SoupApi, String>> = OnceLock::new();
+    SOUP.get_or_init(|| {
+        let mut libraries = Vec::with_capacity(SOUP_NAMES.len());
+        for name in SOUP_NAMES {
+            libraries
+                .push(open(name).map_err(|error| format!("libsoup 3 is not installed ({error})"))?);
+        }
+        // SAFETY: each library is the one the table's signatures describe.
+        unsafe {
+            Ok(SoupApi {
+                soup: Soup::load(&libraries[0])?,
+                gio: Gio::load(&libraries[1])?,
+                gobject: GObjectRef::load(&libraries[2])?,
+                glib: Glib::load(&libraries[3])?,
+                _libraries: libraries,
+            })
+        }
+    })
+    .as_ref()
+    .map_err(String::as_str)
+}
+
 library!(Gst {
     gst_init_check: unsafe extern "C" fn(*mut c_int, *mut *mut *mut c_char, *mut *mut GError) -> gboolean,
     gst_version: unsafe extern "C" fn(*mut c_uint, *mut c_uint, *mut c_uint, *mut c_uint),
@@ -422,7 +514,7 @@ fn windows_directories() -> Vec<std::path::PathBuf> {
 
 /// Loads `name` from the loader's own path, or else from the first of
 /// [`DIRECTORIES`] that has it.
-fn open(name: &str) -> Result<Library, String> {
+pub(crate) fn open(name: &str) -> Result<Library, String> {
     // SAFETY: these are the system's GLib and GStreamer libraries, whose
     // initialisers are safe to run on any thread.
     let first = unsafe { Library::new(name) };

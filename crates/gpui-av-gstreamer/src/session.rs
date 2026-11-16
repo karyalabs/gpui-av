@@ -37,6 +37,8 @@ pub(crate) struct GstSession {
 
 struct Inner {
     pipeline: Pipeline,
+    /// The loopback proxy a URL with headers plays through.
+    proxy: Option<gpui_av_remux::HlsProxy>,
     events: EventSink,
     /// The last state sent, so a state is reported once.
     reported: PlaybackState,
@@ -82,11 +84,17 @@ struct Inner {
 }
 
 impl GstSession {
-    pub(crate) fn new(pipeline: Pipeline, events: EventSink, cx: &mut App) -> Self {
+    pub(crate) fn new(
+        pipeline: Pipeline,
+        proxy: Option<gpui_av_remux::HlsProxy>,
+        events: EventSink,
+        cx: &mut App,
+    ) -> Self {
         // A refusal here also lands on the bus, which the first poll reads.
         pipeline.set_state(ffi::GST_STATE_PAUSED);
         let inner = Rc::new(RefCell::new(Inner {
             pipeline,
+            proxy,
             events,
             reported: PlaybackState::Loading,
             loaded: false,
@@ -163,7 +171,12 @@ impl Inner {
                             ErrorKind::Unsupported,
                             format!("GStreamer needs {plugin}, which is not installed"),
                         ),
-                        _ => error,
+                        // GStreamer sees only the proxy's answer; the
+                        // proxy knows what the server said.
+                        _ => match self.proxy.as_ref().and_then(|proxy| proxy.failure()) {
+                            Some(failure) => proxy_error(failure),
+                            None => error,
+                        },
                     };
                     self.fail(error);
                     return;
@@ -615,4 +628,16 @@ impl Drop for GstSession {
 /// standard error, as the other backends do.
 fn log(message: &str) {
     eprintln!("gpui-av-gstreamer: {message}");
+}
+
+/// The error for what the server behind the proxy answered.
+fn proxy_error(failure: gpui_av_remux::Failure) -> Error {
+    let kind = match failure.kind {
+        gpui_av_remux::FailureKind::Io(std::io::ErrorKind::NotFound) => ErrorKind::NotFound,
+        gpui_av_remux::FailureKind::Io(std::io::ErrorKind::PermissionDenied) => {
+            ErrorKind::Unauthorized
+        }
+        _ => ErrorKind::Network,
+    };
+    Error::new(kind, failure.message)
 }

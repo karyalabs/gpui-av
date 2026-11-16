@@ -33,7 +33,7 @@ mod sparse;
 
 pub use fragments::fragmented_mp4_length;
 #[cfg(not(target_arch = "wasm32"))]
-pub use proxy::{Fetch, HlsProxy, HttpResponse, resolve_url};
+pub use proxy::{Fetch, HlsProxy, HttpResponse, HttpStream, resolve_url};
 pub use ranges::{Fetched, RangeReader, RangeSource};
 #[cfg(not(target_arch = "wasm32"))]
 pub use serve::{Failure, FailureKind, HlsServer, Summary};
