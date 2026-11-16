@@ -613,6 +613,10 @@ mod windows_test {
                     }
                 }
             }
+            eprintln!(
+                "server: GET {path} range {range:?} token {}",
+                auth.is_some()
+            );
             if let Ok(mut log) = log.lock() {
                 log.push((path.clone(), auth.is_some()));
             }
@@ -669,9 +673,15 @@ mod windows_test {
             } else {
                 write!(writer, "HTTP/1.1 200 OK\r\n")?;
             }
+            let content_type = match name.rsplit('.').next() {
+                Some("m3u8") => "application/vnd.apple.mpegurl",
+                Some("ts") => "video/mp2t",
+                Some("mkv") => "video/x-matroska",
+                _ => "video/mp4",
+            };
             write!(
                 writer,
-                "Accept-Ranges: bytes\r\nContent-Type: video/mp4\r\nContent-Length: {}\r\n\r\n",
+                "Accept-Ranges: bytes\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n",
                 end - start + 1
             )?;
             writer.write_all(&clip[start as usize..=end as usize])?;
