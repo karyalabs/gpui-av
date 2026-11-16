@@ -6,7 +6,9 @@
 //! It writes its own short H.264 clip with Apple's encoder, so it needs no
 //! media and no display, and runs in CI on macOS. With `GPUI_AV_CLIPS` set
 //! to the tier A clips folder it also plays the whole corpus over HTTP and
-//! prints timings.
+//! prints timings; with `GPUI_AV_MANIFEST=tier-b.json` and the tier B folder
+//! it plays that corpus, Matroska and WebM through the remuxer included.
+//! Every clip that seeks must also move on from there.
 //!
 //! Routes, like `scripts/serve.py`:
 //! - `/private/NAME` needs the token (401 without).
@@ -588,13 +590,15 @@ mod macos {
         );
     }
 
-    /// The tier A corpus over HTTP: every route with the token, and
+    /// A corpus over HTTP (tier A, or the manifest `GPUI_AV_MANIFEST`
+    /// names, such as `tier-b.json`): every route with the token, and
     /// `/private/` without it.
     async fn corpus(dir: &Path, report: &mut Report, cx: &mut AsyncApp) {
-        let manifest = std::fs::read_to_string(dir.join("../corpus/tier-a.json"))
-            .or_else(|_| std::fs::read_to_string("corpus/tier-a.json"))
-            .or_else(|_| std::fs::read_to_string("../../corpus/tier-a.json"))
-            .expect("corpus/tier-a.json");
+        let name = std::env::var("GPUI_AV_MANIFEST").unwrap_or_else(|_| "tier-a.json".into());
+        let manifest = std::fs::read_to_string(dir.join("../corpus").join(&name))
+            .or_else(|_| std::fs::read_to_string(Path::new("corpus").join(&name)))
+            .or_else(|_| std::fs::read_to_string(Path::new("../../corpus").join(&name)))
+            .unwrap_or_else(|_| panic!("corpus/{name}"));
         let clips = manifest_clips(&manifest);
         let mut files = HashMap::new();
         for clip in &clips {
@@ -603,7 +607,7 @@ mod macos {
             }
         }
         let server = Server::start(files);
-        println!("\nclip | route | playing ms | seek ms | error");
+        println!("\nclip | route | playing ms | seek ms | moved on | error");
         for clip in &clips {
             let seek = clip
                 .duration
@@ -625,11 +629,12 @@ mod macos {
                 };
                 let token = !std::ptr::eq(headers, OTHER_HEADER);
                 println!(
-                    "{} | {route}{} | {} | {} | {}",
+                    "{} | {route}{} | {} | {} | {} | {}",
                     clip.file,
                     if token { "" } else { ", no token" },
                     ms(played.playing),
                     ms(played.seek),
+                    played.advanced,
                     played
                         .error
                         .as_ref()
@@ -640,7 +645,7 @@ mod macos {
                 } else if clip.expect == "plays" {
                     played.error.is_none()
                         && played.playing.is_some()
-                        && (seek.is_none() || played.seek.is_some())
+                        && (seek.is_none() || (played.seek.is_some() && played.advanced))
                 } else {
                     played.error.is_some()
                 };

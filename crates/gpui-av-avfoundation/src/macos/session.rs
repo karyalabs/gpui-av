@@ -147,11 +147,12 @@ impl AvSession {
             item.addOutput(&output);
             let player = AVPlayer::playerWithPlayerItem(Some(&item), mtm);
             player.setActionAtItemEnd(AVPlayerActionAtItemEnd::Pause);
-            if loader.is_some() || remuxed.is_some() {
+            if loader.is_some() {
                 // Apple's advice for a delegate that loads the media: the
-                // stall prediction assumes AVFoundation's own loading. A
-                // local server answers at once, so waiting only adds
-                // latency.
+                // stall prediction assumes AVFoundation's own loading.
+                // Not for the remuxer's HLS: without waiting, `play()`
+                // before the first segment arrives stalls the player for
+                // good (it reports playing and the clock stays at zero).
                 player.setAutomaticallyWaitsToMinimizeStalling(false);
             }
             (player, item, output)
