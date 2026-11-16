@@ -48,9 +48,19 @@ jobs:
         run: |
           cargo run --locked --release -p gpui-av-lab -- \
             --bench corpus/tier-a.json --clips clips --backend mediafoundation --out bench-windows.json
+      - name: Make the tier B clips
+        continue-on-error: true
+        shell: bash
+        run: scripts/make-tier-b.sh clips-b
+      - name: The lab's bench on tier B, for the coverage table
+        continue-on-error: true
+        shell: bash
+        run: |
+          cargo run --locked --release -p gpui-av-lab -- \
+            --bench corpus/tier-b.json --clips clips-b --backend mediafoundation --out bench-windows-b.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: bench-windows
-          path: bench-windows.json
+          path: bench-windows*.json
           if-no-files-found: ignore
