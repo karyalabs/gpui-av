@@ -54,8 +54,29 @@ mod native {
 
     impl GStreamerBackend {
         /// The backend. It holds no state; one is enough for an app.
+        ///
+        /// GStreamer starts loading on a background thread here, so the
+        /// first media it opens does not wait for it on the main thread:
+        /// on a fresh install, GStreamer scans every plugin before its
+        /// first use, which can take a minute.
         pub fn new() -> Self {
+            Self::warm_up();
             Self
+        }
+
+        fn warm_up() {
+            static STARTED: std::sync::Once = std::sync::Once::new();
+            STARTED.call_once(|| {
+                let spawned = std::thread::Builder::new()
+                    .name("gstreamer-load".into())
+                    // Whether it loaded is for `open` to report.
+                    .spawn(|| ffi::api().is_ok());
+                if let Err(error) = spawned {
+                    eprintln!(
+                        "gpui-av-gstreamer: could not load GStreamer in the background: {error}"
+                    );
+                }
+            });
         }
 
         /// Whether GStreamer 1.x is installed and starts. Loads it on the
