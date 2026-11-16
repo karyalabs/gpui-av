@@ -585,12 +585,83 @@ mod macos {
             cx,
         )
         .await;
-        server.take_log();
+        let log = server.take_log();
+        // The playlist is empty, so it cannot play; what counts is that the
+        // proxy fetched it with the token. Playing HLS is in the corpus run.
         report.check(
-            "a playlist with headers: Unsupported",
-            played.error.as_ref().map(|error| error.0) == Some(ErrorKind::Unsupported),
-            &played,
+            "a playlist with headers goes through the proxy with the token",
+            log.iter()
+                .any(|request| request.path == "/list.m3u8" && request.authorized)
+                && played.error.as_ref().map(|error| error.0) != Some(ErrorKind::Unsupported),
+            (&played, &log),
         );
+    }
+
+    /// HLS with headers through the proxy, from a Matroska clip of the
+    /// corpus remuxed here: on the token's origin, and through a redirect
+    /// to another, where the segments must arrive without it.
+    async fn hls_with_headers(dir: &Path, report: &mut Report, cx: &mut AsyncApp) {
+        let clip = dir.join("h264-aac-1280x720.mkv");
+        let Ok(file) = std::fs::File::open(&clip) else {
+            println!("info no {} for the HLS check", clip.display());
+            return;
+        };
+        let mut remuxer = match gpui_av_remux::Remuxer::open(std::io::BufReader::new(file)) {
+            Ok(remuxer) => remuxer,
+            Err(error) => {
+                report.check("remux the HLS clip", false, error.to_string());
+                return;
+            }
+        };
+        let mut files = HashMap::new();
+        files.insert(
+            "hls/index.m3u8".to_string(),
+            Arc::new(
+                remuxer
+                    .hls_playlist("init.mp4", |index| format!("{index}.m4s"))
+                    .into_bytes(),
+            ),
+        );
+        files.insert("hls/init.mp4".to_string(), Arc::new(remuxer.init_segment()));
+        for index in 0..remuxer.segments().len() {
+            match remuxer.media_segment(index) {
+                Ok(segment) => {
+                    files.insert(format!("hls/{index}.m4s"), Arc::new(segment));
+                }
+                Err(error) => {
+                    report.check("remux the HLS clip", false, error.to_string());
+                    return;
+                }
+            }
+        }
+        let server = Server::start(files);
+        for route in ["private", "hop"] {
+            let played = play(
+                &server.url(route, "hls/index.m3u8"),
+                WITH_TOKEN,
+                Some(Duration::from_secs(2)),
+                cx,
+            )
+            .await;
+            let log = server.take_log();
+            report.check(
+                &format!("HLS with headers plays and seeks ({route})"),
+                played.error.is_none()
+                    && played.playing.is_some()
+                    && played.seek.is_some()
+                    && played.advanced,
+                (&played, log.len()),
+            );
+            let leaked = log
+                .iter()
+                .filter(|request| request.path.starts_with("/open/") && request.authorized)
+                .count();
+            report.check(
+                &format!("HLS with headers keeps them off other origins ({route})"),
+                leaked == 0,
+                leaked,
+            );
+        }
     }
 
     /// A corpus over HTTP (tier A, or the manifest `GPUI_AV_MANIFEST`
@@ -715,6 +786,7 @@ mod macos {
                 checks(&mut report, cx).await;
                 if let Some(dir) = std::env::var_os("GPUI_AV_CLIPS") {
                     corpus(Path::new(&dir), &mut report, cx).await;
+                    hls_with_headers(Path::new(&dir), &mut report, cx).await;
                 }
                 // GPUI's quit ends the process with success whatever
                 // happened, so report and exit with the right code here.

@@ -121,16 +121,16 @@ struct Inner {
     pending_tracks: Vec<(TrackKind, Option<usize>)>,
     /// Subtitle text inside the media.
     legible: Legible,
-    /// The local server a Matroska or WebM source plays from. Last, so the
-    /// player and item go first.
-    remuxed: Option<gpui_av_remux::HlsServer>,
+    /// The local server a Matroska or WebM source, or HLS with headers,
+    /// plays from. Last, so the player and item go first.
+    remuxed: Option<super::Local>,
 }
 
 impl AvSession {
     pub(crate) fn new(
         asset: Retained<AVURLAsset>,
         loader: Option<Loader>,
-        remuxed: Option<gpui_av_remux::HlsServer>,
+        remuxed: Option<super::Local>,
         http: Option<HttpSource>,
         events: EventSink,
         mtm: MainThreadMarker,

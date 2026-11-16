@@ -1,6 +1,7 @@
 //! Range requests through `NSURLSession`, for remuxing a Matroska or WebM
 //! URL on the HLS server's thread. Each fetch blocks that thread (never
-//! the main one) until the answer is in. The headers go to the URL's
+//! the main one) until the answer is in; the HLS proxy's requests (HLS
+//! with request headers) go through the same session. The headers go to the URL's
 //! origin only: a redirect elsewhere gets none (the session's delegate
 //! sees each redirect, as the resource loader's does).
 
@@ -10,7 +11,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use block2::{DynBlock, RcBlock};
-use gpui_av_remux::{Fetched, RangeSource};
+use gpui_av_remux::{Fetch, Fetched, HttpResponse, RangeSource};
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, define_class, msg_send};
@@ -57,25 +58,28 @@ define_class!(
     }
 );
 
-/// A URL and the headers that go with every request for it on its origin.
-pub(crate) struct UrlRanges {
-    url: String,
+/// A session for one source: requests carry the source's headers on its
+/// origin only, redirects included.
+pub(crate) struct Requests {
+    origin: Origin,
     headers: Vec<(String, String)>,
     session: Retained<NSURLSession>,
 }
 
 // SAFETY: NSURLSession is thread-safe; the session is only used to start
 // tasks and, on drop, to be invalidated.
-unsafe impl Send for UrlRanges {}
+unsafe impl Send for Requests {}
+// SAFETY: as above; nothing in it changes after it is made.
+unsafe impl Sync for Requests {}
 
-impl UrlRanges {
+impl Requests {
     /// `None` for a URL with no origin (not `http` or `https`).
     pub fn new(url: &str, headers: &[(String, String)]) -> Option<Self> {
         let parsed = NSURL::URLWithString(&NSString::from_str(url))?;
         let origin = Origin::of(&parsed)?;
         let delegate: Retained<Redirects> = {
             let this = Redirects::alloc().set_ivars(Policy {
-                origin,
+                origin: origin.clone(),
                 headers: headers.to_vec(),
             });
             // SAFETY: plain NSObject initialisation.
@@ -93,40 +97,34 @@ impl UrlRanges {
             )
         };
         Some(Self {
-            url: url.to_string(),
+            origin,
             headers: headers.to_vec(),
             session,
         })
     }
-}
 
-impl Drop for UrlRanges {
-    fn drop(&mut self) {
-        // Releases the session's reference to its delegate.
-        self.session.invalidateAndCancel();
-    }
-}
-
-/// What a request's completion handler hands back.
-type Answer = Result<(isize, Vec<u8>, Option<String>), String>;
-
-impl RangeSource for UrlRanges {
-    fn fetch(&mut self, start: u64, length: u64) -> io::Result<Fetched> {
-        let url = NSURL::URLWithString(&NSString::from_str(&self.url))
+    /// GETs `url`, bytes `start` to `end` when a range is given, blocking
+    /// until the answer is in.
+    pub fn get(&self, url: &str, range: Option<(u64, Option<u64>)>) -> io::Result<HttpResponse> {
+        let parsed = NSURL::URLWithString(&NSString::from_str(url))
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "not a valid URL"))?;
-        let request = NSMutableURLRequest::requestWithURL(&url);
-        for (name, value) in &self.headers {
+        let request = NSMutableURLRequest::requestWithURL(&parsed);
+        if Origin::of(&parsed).is_some_and(|origin| origin == self.origin) {
+            for (name, value) in &self.headers {
+                request.setValue_forHTTPHeaderField(
+                    Some(&NSString::from_str(value)),
+                    &NSString::from_str(name),
+                );
+            }
+        }
+        if let Some((start, end)) = range {
+            let end = end.map(|end| end.to_string()).unwrap_or_default();
             request.setValue_forHTTPHeaderField(
-                Some(&NSString::from_str(value)),
-                &NSString::from_str(name),
+                Some(&NSString::from_str(&format!("bytes={start}-{end}"))),
+                &NSString::from_str("Range"),
             );
         }
-        let range = format!("bytes={start}-{}", start + length.max(1) - 1);
-        request.setValue_forHTTPHeaderField(
-            Some(&NSString::from_str(&range)),
-            &NSString::from_str("Range"),
-        );
-        let (sender, receiver) = mpsc::channel::<Answer>();
+        let (sender, receiver) = mpsc::channel::<Result<HttpResponse, String>>();
         // The handler is called once; the sender is taken out on that call.
         let sender = Mutex::new(Some(sender));
         let handler = RcBlock::new(
@@ -138,19 +136,23 @@ impl RangeSource for UrlRanges {
                         (_, _, Some(error)) => Err(error.localizedDescription().to_string()),
                         (data, Some(response), None) => {
                             let http = response.downcast_ref::<NSHTTPURLResponse>();
-                            let status = http.map_or(200, |http| http.statusCode());
-                            let content_range = http
-                                .and_then(|http| {
-                                    http.valueForHTTPHeaderField(&NSString::from_str(
-                                        "Content-Range",
-                                    ))
+                            let header = |name: &str| {
+                                http.and_then(|http| {
+                                    http.valueForHTTPHeaderField(&NSString::from_str(name))
                                 })
-                                .map(|range| range.to_string());
-                            Ok((
-                                status,
-                                data.map(NSData::to_vec).unwrap_or_default(),
-                                content_range,
-                            ))
+                                .map(|value| value.to_string())
+                            };
+                            Ok(HttpResponse {
+                                status: http.map_or(200, |http| http.statusCode()) as u16,
+                                content_type: header("Content-Type"),
+                                content_range: header("Content-Range"),
+                                url: response
+                                    .URL()
+                                    .and_then(|url| url.absoluteString())
+                                    .map(|url| url.to_string())
+                                    .unwrap_or_default(),
+                                body: data.map(NSData::to_vec).unwrap_or_default(),
+                            })
                         }
                         _ => Err("no answer".to_string()),
                     }
@@ -158,7 +160,7 @@ impl RangeSource for UrlRanges {
                 if let Some(sender) = sender.lock().ok().and_then(|mut sender| sender.take())
                     && sender.send(answer).is_err()
                 {
-                    // The fetch gave up waiting; nothing to deliver to.
+                    // The request gave up waiting; nothing to deliver to.
                 }
             },
         );
@@ -174,8 +176,50 @@ impl RangeSource for UrlRanges {
             task.cancel();
             io::Error::new(io::ErrorKind::TimedOut, "the server did not answer in time")
         })?;
-        let (status, bytes, content_range) =
-            answer.map_err(|message| io::Error::new(io::ErrorKind::NotConnected, message))?;
+        answer.map_err(|message| io::Error::new(io::ErrorKind::NotConnected, message))
+    }
+}
+
+impl Drop for Requests {
+    fn drop(&mut self) {
+        // Releases the session's reference to its delegate.
+        self.session.invalidateAndCancel();
+    }
+}
+
+/// HLS through the loopback proxy: every playlist, key and segment with
+/// the source's headers.
+impl Fetch for Requests {
+    fn get(&self, url: &str, range: Option<(u64, Option<u64>)>) -> io::Result<HttpResponse> {
+        Requests::get(self, url, range)
+    }
+}
+
+/// Byte ranges of one URL, for the remuxer.
+pub(crate) struct UrlRanges {
+    url: String,
+    requests: Requests,
+}
+
+impl UrlRanges {
+    /// `None` for a URL with no origin (not `http` or `https`).
+    pub fn new(url: &str, headers: &[(String, String)]) -> Option<Self> {
+        Some(Self {
+            url: url.to_string(),
+            requests: Requests::new(url, headers)?,
+        })
+    }
+}
+
+impl RangeSource for UrlRanges {
+    fn fetch(&mut self, start: u64, length: u64) -> io::Result<Fetched> {
+        let end = start + length.max(1) - 1;
+        let HttpResponse {
+            status,
+            content_range,
+            body: bytes,
+            ..
+        } = self.requests.get(&self.url, Some((start, Some(end))))?;
         match status {
             206 => {}
             // The whole file, from a server that ignores ranges: only good
