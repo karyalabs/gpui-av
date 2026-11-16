@@ -1,3 +1,6 @@
+// NOT SAFE on macOS 27.3: see README.md. It left the built-in display
+// mirroring a virtual one that outlived this process.
+//
 // A virtual display for running the bench on a Mac that is in use: a
 // covered or unfocused-and-covered window is throttled by macOS, so the
 // measuring window goes on a screen nobody looks at instead of over the

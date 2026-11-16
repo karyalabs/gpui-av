@@ -15,6 +15,12 @@ open -gna "Google Chrome" --args --user-data-dir="$TMPDIR/gpui-av-chrome" \
 kill %1                       # removes the screen
 ```
 
+- **Do not run it on macOS 27.3 or later until it is fixed.** On
+  2026-11-16 (macOS 27.3, M4 Max) its un-mirror did not take: macOS made
+  the new screen main with the built-in screen mirroring it, the helper
+  exited as designed, and the virtual screen and the mirror stayed behind
+  with no process. A session un-mirror was then refused (CGError 1014).
+  It took the person at the Mac to undo it in System Settings > Displays.
 - It uses CoreGraphics' private `CGVirtualDisplay` classes. Dev use only;
   any macOS release may change or remove them.
 - It changes no setting. macOS may put a new display in a mirror set and
