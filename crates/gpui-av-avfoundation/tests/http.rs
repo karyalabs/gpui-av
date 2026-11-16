@@ -15,9 +15,9 @@
 //! - `/moved/NAME` redirects to `/private/NAME` on the same origin.
 //! - `/hop/NAME` needs the token and redirects to `/open/NAME` on another
 //!   host (`127.0.0.1` and `localhost` swap).
-//! - `/open/NAME` answers 400 when `Authorization` is present, as a signed
-//!   storage URL does: a clip through `/hop/` plays only if the header was
-//!   dropped.
+//! - `/open/NAME` answers 400 when `Authorization` or `X-Emby-Token` is
+//!   present, as a signed storage URL does: a clip through `/hop/` plays
+//!   only if the headers were dropped.
 //! - `/drop/NAME` needs the token and cuts every range after the first.
 //! - `/list.m3u8` needs the token and answers an HLS playlist.
 
@@ -134,7 +134,7 @@ mod macos {
                     let value = value.trim().to_string();
                     match name.trim().to_ascii_lowercase().as_str() {
                         "range" => range = Some(value),
-                        "authorization" => auth = Some(value),
+                        "authorization" | "x-emby-token" => auth = Some(value),
                         "host" => host = value,
                         _ => {}
                     }
@@ -478,7 +478,10 @@ mod macos {
         }
     }
 
-    const WITH_TOKEN: &[(&str, &str)] = &[("Authorization", TOKEN)];
+    /// A token in `Authorization`, which NSURLSession drops on any redirect
+    /// itself, and in a header of the kind media servers use, which it
+    /// keeps: only our redirect rule keeps that one off another origin.
+    const WITH_TOKEN: &[(&str, &str)] = &[("Authorization", TOKEN), ("X-Emby-Token", TOKEN)];
     const OTHER_HEADER: &[(&str, &str)] = &[("X-Other", "1")];
 
     async fn checks(report: &mut Report, cx: &mut AsyncApp) {

@@ -1,26 +1,110 @@
 //! Range requests through `NSURLSession`, for remuxing a Matroska or WebM
 //! URL on the HLS server's thread. Each fetch blocks that thread (never
-//! the main one) until the answer is in.
+//! the main one) until the answer is in. The headers go to the URL's
+//! origin only: a redirect elsewhere gets none (the session's delegate
+//! sees each redirect, as the resource loader's does).
 
 use std::io;
 use std::sync::Mutex;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use block2::RcBlock;
+use block2::{DynBlock, RcBlock};
 use gpui_av_remux::{Fetched, RangeSource};
+use objc2::rc::Retained;
+use objc2::runtime::{NSObject, ProtocolObject};
+use objc2::{AnyThread, DefinedClass, define_class, msg_send};
 use objc2_foundation::{
-    NSData, NSError, NSHTTPURLResponse, NSMutableURLRequest, NSString, NSURL, NSURLResponse,
-    NSURLSession,
+    NSData, NSError, NSHTTPURLResponse, NSMutableURLRequest, NSObjectProtocol, NSString, NSURL,
+    NSURLRequest, NSURLResponse, NSURLSession, NSURLSessionConfiguration, NSURLSessionDelegate,
+    NSURLSessionTask, NSURLSessionTaskDelegate,
 };
+
+use super::loader::{Origin, redirected};
 
 /// How long one range request may take.
 const TIMEOUT: Duration = Duration::from_secs(60);
 
-/// A URL and the headers that go with every request for it.
+struct Policy {
+    origin: Origin,
+    headers: Vec<(String, String)>,
+}
+
+define_class!(
+    /// Applies the origin rule to each redirect of the remuxer's requests.
+    #[unsafe(super(NSObject))]
+    #[name = "GpuiAvRangeRedirects"]
+    #[ivars = Policy]
+    struct Redirects;
+
+    unsafe impl NSObjectProtocol for Redirects {}
+    unsafe impl NSURLSessionDelegate for Redirects {}
+
+    unsafe impl NSURLSessionTaskDelegate for Redirects {
+        #[unsafe(method(URLSession:task:willPerformHTTPRedirection:newRequest:completionHandler:))]
+        fn will_redirect(
+            &self,
+            _session: &NSURLSession,
+            _task: &NSURLSessionTask,
+            _response: &NSHTTPURLResponse,
+            request: &NSURLRequest,
+            completion: &DynBlock<dyn Fn(*mut NSURLRequest)>,
+        ) {
+            let policy = self.ivars();
+            let next = redirected(request, &policy.origin, &policy.headers);
+            completion.call((Retained::as_ptr(&next) as *mut NSURLRequest,));
+        }
+    }
+);
+
+/// A URL and the headers that go with every request for it on its origin.
 pub(crate) struct UrlRanges {
-    pub url: String,
-    pub headers: Vec<(String, String)>,
+    url: String,
+    headers: Vec<(String, String)>,
+    session: Retained<NSURLSession>,
+}
+
+// SAFETY: NSURLSession is thread-safe; the session is only used to start
+// tasks and, on drop, to be invalidated.
+unsafe impl Send for UrlRanges {}
+
+impl UrlRanges {
+    /// `None` for a URL with no origin (not `http` or `https`).
+    pub fn new(url: &str, headers: &[(String, String)]) -> Option<Self> {
+        let parsed = NSURL::URLWithString(&NSString::from_str(url))?;
+        let origin = Origin::of(&parsed)?;
+        let delegate: Retained<Redirects> = {
+            let this = Redirects::alloc().set_ivars(Policy {
+                origin,
+                headers: headers.to_vec(),
+            });
+            // SAFETY: plain NSObject initialisation.
+            unsafe { msg_send![super(this), init] }
+        };
+        let configuration = NSURLSessionConfiguration::ephemeralSessionConfiguration();
+        // SAFETY: the delegate conforms to the session delegate protocols;
+        // the session retains it until invalidated, and runs its callbacks
+        // on a queue of its own.
+        let session = unsafe {
+            NSURLSession::sessionWithConfiguration_delegate_delegateQueue(
+                &configuration,
+                Some(ProtocolObject::from_ref(&*delegate)),
+                None,
+            )
+        };
+        Some(Self {
+            url: url.to_string(),
+            headers: headers.to_vec(),
+            session,
+        })
+    }
+}
+
+impl Drop for UrlRanges {
+    fn drop(&mut self) {
+        // Releases the session's reference to its delegate.
+        self.session.invalidateAndCancel();
+    }
 }
 
 /// What a request's completion handler hands back.
@@ -78,10 +162,12 @@ impl RangeSource for UrlRanges {
                 }
             },
         );
-        // SAFETY: the shared session's tasks call the handler on a
-        // background queue; everything it captures is Send.
+        // SAFETY: the session's tasks call the handler on its delegate
+        // queue; everything it captures is Send. With a completion
+        // handler the delegate still sees redirects.
         let task = unsafe {
-            NSURLSession::sharedSession().dataTaskWithRequest_completionHandler(&request, &handler)
+            self.session
+                .dataTaskWithRequest_completionHandler(&request, &handler)
         };
         task.resume();
         let answer = receiver.recv_timeout(TIMEOUT).map_err(|_| {
