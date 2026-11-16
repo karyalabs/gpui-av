@@ -170,6 +170,8 @@ pub(crate) struct Pipeline {
     local: bool,
     /// Where playbin sends the selected text track.
     text_sink: Option<Object>,
+    /// The colour put in place of the decoder's, when the bin sets one.
+    colour: Option<ColorInfo>,
 }
 
 /// The request headers, and whether the source playbin picked could not
@@ -182,7 +184,14 @@ struct HeaderSetup {
 impl Pipeline {
     /// Builds the pipeline for `uri` without starting it. `headers` go
     /// with every HTTP request.
-    pub fn new(api: &'static Api, uri: &str, headers: &[(String, String)]) -> Result<Self, Error> {
+    /// `colorimetry` (GStreamer's text for it), when given, replaces what
+    /// the decoder says, before the frames are converted.
+    pub fn new(
+        api: &'static Api,
+        uri: &str,
+        headers: &[(String, String)],
+        colorimetry: Option<&str>,
+    ) -> Result<Self, Error> {
         let local = uri.starts_with("file:");
         let uri = c_string(uri)?;
         let headers = headers
@@ -204,9 +213,31 @@ impl Pipeline {
             let playbin = (gst.gst_object_ref_sink)(playbin);
             let playbin_ref = Object(playbin);
 
-            let description = c_string(video_sink(api))?;
             let mut error = ptr::null_mut();
-            let bin = (gst.gst_parse_bin_from_description)(description.as_ptr(), 1, &mut error);
+            // capssetter is in plugins-good; without it, the decoder's
+            // colorimetry stands.
+            let mut colour = None;
+            let bin = colorimetry
+                .and_then(|colorimetry| {
+                    let description = c_string(&format!(
+                        "capssetter caps=\"video/x-raw,colorimetry=(string){colorimetry}\" ! {}",
+                        video_sink(api)
+                    ))
+                    .ok()?;
+                    let mut ignored = ptr::null_mut();
+                    let bin =
+                        (gst.gst_parse_bin_from_description)(description.as_ptr(), 1, &mut ignored);
+                    ffi::take_error(&api.glib, ignored);
+                    colour = (!bin.is_null()).then(|| parse_colorimetry(colorimetry));
+                    (!bin.is_null()).then_some(bin)
+                })
+                .unwrap_or(ptr::null_mut());
+            let bin = if bin.is_null() {
+                let description = c_string(video_sink(api))?;
+                (gst.gst_parse_bin_from_description)(description.as_ptr(), 1, &mut error)
+            } else {
+                bin
+            };
             if bin.is_null() {
                 let message = ffi::take_error(&api.glib, error)
                     .map(|(_, _, message)| message)
@@ -304,6 +335,7 @@ impl Pipeline {
                 header_setup,
                 local,
                 text_sink,
+                colour,
             })
         }
     }
@@ -602,6 +634,9 @@ impl Pipeline {
     /// The decoder's colour description, from the caps playbin's first
     /// video stream arrives with.
     pub fn color(&self) -> ColorInfo {
+        if let Some(colour) = self.colour {
+            return colour;
+        }
         // SAFETY: `get-video-pad` returns a pad reference we own (or null).
         unsafe {
             let mut pad: *mut c_void = ptr::null_mut();

@@ -142,12 +142,30 @@ mod native {
                 }
                 _ => None,
             };
+            let colorimetry = match source.location() {
+                Location::File(path) => full_range_colorimetry(api, path),
+                _ => None,
+            };
+            let colorimetry = colorimetry.as_deref();
             let pipeline = match &proxy {
-                Some(proxy) => Pipeline::new(api, proxy.url(), &[])?,
-                None => Pipeline::new(api, &uri, source.headers())?,
+                Some(proxy) => Pipeline::new(api, proxy.url(), &[], colorimetry)?,
+                None => Pipeline::new(api, &uri, source.headers(), colorimetry)?,
             };
             Ok(Box::new(GstSession::new(pipeline, proxy, events, cx)))
         }
+    }
+
+    /// GStreamer 1.24's MP4 demuxer drops the full-range flag of a video
+    /// track's `colr` box, and its caps win over the parser's, so the
+    /// picture is converted as limited range: washed out. For an MP4 that
+    /// states full range, the colorimetry it states.
+    fn full_range_colorimetry(api: &Api, path: &Path) -> Option<String> {
+        let file = std::fs::File::open(path).ok()?;
+        let colour = gpui_av_remux::mp4_video_colour(&mut std::io::BufReader::new(file))
+            .ok()
+            .flatten()
+            .filter(|colour| colour.full_range)?;
+        ffi::colorimetry_from_iso(api, colour.primaries, colour.transfer, colour.matrix, true)
     }
 
     fn file_uri(api: &Api, path: &Path) -> Result<String, Error> {
