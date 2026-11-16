@@ -111,15 +111,15 @@ pub(crate) fn select_audio(video: &JsValue, index: usize) {
 }
 
 /// Keeps the text track at `index` on, and every other one off. The one
-/// on is `hidden`: its cues are read for [`text`], and the browser does
-/// not draw them over the picture itself. A browser may turn a default
-/// track on by itself, so this runs again whenever the tracks are read.
-/// Returns the track on, if it exists.
+/// on is `showing`: the browser draws it over the picture, since GPUI
+/// cannot draw over the video element; its cues are still read for
+/// [`text`]. A browser may turn a default track on by itself, so this runs
+/// again whenever the tracks are read. Returns the track on, if it exists.
 pub(crate) fn apply_text(video: &JsValue, index: Option<usize>) -> Option<usize> {
     let text = text_tracks(video);
     for (position, track) in text.iter().enumerate() {
         let mode = if Some(position) == index {
-            "hidden"
+            "showing"
         } else {
             "disabled"
         };
