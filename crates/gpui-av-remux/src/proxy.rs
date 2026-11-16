@@ -5,9 +5,13 @@
 //! through a [`Fetch`] that adds the headers, and rewrites every URI in a
 //! playlist to one of its own. Nothing is cached, so live playlists stay
 //! live.
+//!
+//! It serves a plain media URL the same way, for a player that cannot send
+//! headers at all, or not under the origin rule: everything but a playlist
+//! is streamed through, ranges included.
 
 use std::collections::HashMap;
-use std::io::{self, BufReader, Write};
+use std::io::{self, BufReader, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -31,13 +35,47 @@ pub struct HttpResponse {
     pub body: Vec<u8>,
 }
 
+/// A response whose body is read as it arrives, from [`Fetch::open`].
+pub struct HttpStream {
+    /// The HTTP status.
+    pub status: u16,
+    /// `Content-Type`, when the server sent one.
+    pub content_type: Option<String>,
+    /// `Content-Range`, for a 206.
+    pub content_range: Option<String>,
+    /// `Content-Length`, when the server sent one.
+    pub content_length: Option<u64>,
+    /// The URL that answered, after any redirects.
+    pub url: String,
+    /// The body.
+    pub body: Box<dyn Read + Send>,
+}
+
 /// Fetches a URL with the source's headers (on the source's origin only,
 /// redirects included). It blocks; the proxy calls it on its own threads.
 pub trait Fetch: Send + Sync + 'static {
     /// GETs `url`, for bytes `start` to `end` (inclusive, or to the end)
     /// when `range` is given.
     fn get(&self, url: &str, range: Option<(u64, Option<u64>)>) -> io::Result<HttpResponse>;
+
+    /// GETs `url` like [`Fetch::get`], handing over the body as it
+    /// arrives, so a whole film is never held in memory. By default it
+    /// reads the whole body with `get`.
+    fn open(&self, url: &str, range: Option<(u64, Option<u64>)>) -> io::Result<HttpStream> {
+        let response = self.get(url, range)?;
+        Ok(HttpStream {
+            status: response.status,
+            content_type: response.content_type,
+            content_range: response.content_range,
+            content_length: Some(response.body.len() as u64),
+            url: response.url,
+            body: Box::new(io::Cursor::new(response.body)),
+        })
+    }
 }
+
+/// The longest playlist the proxy reads: a long VOD playlist is a few MB.
+const MAX_PLAYLIST: u64 = 64 << 20;
 
 /// The upstream URLs the proxy has handed out, by number.
 #[derive(Default)]
@@ -236,22 +274,16 @@ fn respond(
     let Some(upstream) = upstream else {
         return status(writer, "404 Not Found");
     };
-    let fetched = shared.fetch.get(&upstream, range).and_then(|response| {
-        // A player may ask for a playlist in ranges (Media Foundation
-        // does): a playlist is rewritten whole, so it is fetched whole.
-        if range.is_some() && response.status == 206 && is_playlist(&response.body) {
-            shared.fetch.get(&upstream, None)
-        } else {
-            Ok(response)
-        }
-    });
-    let response = match fetched {
+    let fail = |error: io::Error| {
+        shared.keep_failure(Failure {
+            kind: FailureKind::Io(error.kind()),
+            message: format!("{upstream}: {error}"),
+        });
+    };
+    let mut response = match shared.fetch.open(&upstream, range) {
         Ok(response) => response,
         Err(error) => {
-            shared.keep_failure(Failure {
-                kind: FailureKind::Io(error.kind()),
-                message: format!("{upstream}: {error}"),
-            });
+            fail(error);
             return status(writer, "502 Bad Gateway");
         }
     };
@@ -267,40 +299,93 @@ fn respond(
         });
         return status(writer, &format!("{} Upstream", response.status));
     }
-    let base = if response.url.is_empty() {
-        upstream.as_str()
-    } else {
-        response.url.as_str()
-    };
-    let playlist = is_playlist(&response.body);
-    let (body, content_type, content_range) = if playlist {
-        let text = String::from_utf8_lossy(&response.body);
-        let rewritten = rewrite_playlist(&text, base, |url| shared.local_path(url));
-        (
-            rewritten.into_bytes(),
-            Some("application/vnd.apple.mpegurl".to_string()),
-            None,
-        )
-    } else {
-        (response.body, response.content_type, response.content_range)
-    };
-    match (if playlist { 200 } else { response.status }, &content_range) {
+    // Enough of the body to tell a playlist: `#EXTM3U` after a BOM.
+    let mut start = Vec::with_capacity(16);
+    if let Err(error) = (&mut response.body).take(10).read_to_end(&mut start) {
+        fail(error);
+        return status(writer, "502 Bad Gateway");
+    }
+    if is_playlist(&start) {
+        return respond_playlist(writer, method, &upstream, range, response, start, shared);
+    }
+    match (response.status, &response.content_range) {
         (206, Some(content_range)) => write!(
             writer,
             "HTTP/1.1 206 Partial Content\r\nContent-Range: {content_range}\r\n"
         )?,
         _ => write!(writer, "HTTP/1.1 200 OK\r\n")?,
     }
-    if let Some(content_type) = content_type {
+    if let Some(content_type) = &response.content_type {
         write!(writer, "Content-Type: {content_type}\r\n")?;
+    }
+    match response.content_length {
+        Some(length) => write!(writer, "Content-Length: {length}\r\n")?,
+        // The end of the body is where the connection closes.
+        None => write!(writer, "Connection: close\r\n")?,
     }
     write!(
         writer,
-        "Content-Length: {}\r\nCache-Control: no-store\r\n\r\n",
-        body.len()
+        "Accept-Ranges: bytes\r\nCache-Control: no-store\r\n\r\n"
     )?;
     if method == "GET" {
-        writer.write_all(&body)?;
+        writer.write_all(&start)?;
+        // A failure upstream mid-body cuts the answer short, which the
+        // player sees as the connection ending early.
+        io::copy(&mut response.body, writer)?;
+    }
+    writer.flush()?;
+    if response.content_length.is_none() {
+        return Err(io::Error::other("the body ended with the connection"));
+    }
+    Ok(())
+}
+
+/// Answers with the playlist in `response`, whose body so far is `start`,
+/// rewritten.
+fn respond_playlist(
+    writer: &mut impl Write,
+    method: &str,
+    upstream: &str,
+    range: Option<(u64, Option<u64>)>,
+    mut response: HttpStream,
+    start: Vec<u8>,
+    shared: &Shared,
+) -> io::Result<()> {
+    let mut body = start;
+    let read = if range.is_some() && response.status == 206 {
+        // A player may ask for a playlist in ranges (Media Foundation
+        // does): a playlist is rewritten whole, so it is fetched whole.
+        shared.fetch.get(upstream, None).map(|whole| {
+            body = whole.body;
+            response.url = whole.url;
+        })
+    } else {
+        (&mut response.body)
+            .take(MAX_PLAYLIST)
+            .read_to_end(&mut body)
+            .map(drop)
+    };
+    if let Err(error) = read {
+        shared.keep_failure(Failure {
+            kind: FailureKind::Io(error.kind()),
+            message: format!("{upstream}: {error}"),
+        });
+        return status(writer, "502 Bad Gateway");
+    }
+    let base = if response.url.is_empty() {
+        upstream
+    } else {
+        response.url.as_str()
+    };
+    let text = String::from_utf8_lossy(&body);
+    let rewritten = rewrite_playlist(&text, base, |url| shared.local_path(url));
+    write!(
+        writer,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.apple.mpegurl\r\nContent-Length: {}\r\nCache-Control: no-store\r\n\r\n",
+        rewritten.len()
+    )?;
+    if method == "GET" {
+        writer.write_all(rewritten.as_bytes())?;
     }
     writer.flush()
 }
@@ -601,6 +686,50 @@ mod tests {
         let (head, _) = get(&local(&format!("/{token}/99/x")), None);
         assert!(head.contains("404"), "{head}");
         assert!(proxy.failure().is_none());
+    }
+
+    /// Hands over bodies as streams of unknown length.
+    struct Streaming;
+
+    impl Fetch for Streaming {
+        fn get(&self, _url: &str, _range: Option<(u64, Option<u64>)>) -> io::Result<HttpResponse> {
+            Err(io::Error::other("only open"))
+        }
+
+        fn open(&self, url: &str, range: Option<(u64, Option<u64>)>) -> io::Result<HttpStream> {
+            let body: Vec<u8> = match url {
+                "https://media.test/film.mkv" => (0..100_000u32).map(|byte| byte as u8).collect(),
+                _ => b"abc".to_vec(),
+            };
+            Ok(HttpStream {
+                status: if range.is_some() { 206 } else { 200 },
+                content_type: Some("video/x-matroska".into()),
+                content_range: range.map(|_| format!("bytes 0-{}/{}", body.len() - 1, body.len())),
+                content_length: None,
+                url: url.to_string(),
+                body: Box::new(io::Cursor::new(body)),
+            })
+        }
+    }
+
+    #[test]
+    fn streams_media_that_is_not_a_playlist() {
+        let proxy = HlsProxy::start("https://media.test/film.mkv", Streaming).expect("start");
+        assert!(proxy.url().ends_with("/film.mkv"), "{}", proxy.url());
+        let (head, body) = get(proxy.url(), Some("bytes=0-"));
+        assert!(head.contains("206"), "{head}");
+        assert!(
+            head.contains("Content-Range: bytes 0-99999/100000"),
+            "{head}"
+        );
+        assert!(head.contains("video/x-matroska"), "{head}");
+        assert!(head.contains("Connection: close"), "{head}");
+        assert_eq!(body.len(), 100_000);
+        assert_eq!(body[1000], (1000u32 % 256) as u8);
+        let short = HlsProxy::start("https://media.test/tiny", Streaming).expect("start");
+        let (head, body) = get(short.url(), None);
+        assert!(head.contains("200"), "{head}");
+        assert_eq!(body, b"abc");
     }
 
     #[test]

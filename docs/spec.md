@@ -397,12 +397,17 @@ lab/                          gpui-av-lab (L0), with its test-pattern backend
   appsink asks for NV12 instead and each sample, still mapped, becomes a
   `gpui::VideoFrame` that `paint_video_frame` draws, with no conversion
   or copy on the CPU (E5 step 1; `presenter()` reports "surface"). State comes from the bus, read every 20 ms on
-  the main thread, as macOS polls AVPlayer. Request headers go into
-  `souphttpsrc`'s `extra-headers` from playbin's `source-setup`; a source
-  element without that property fails the media as `Unsupported`.
-  libsoup sends them to the source's host and drops `Authorization` on a
-  redirect to another host (checked with `scripts/serve.py`'s `/hop/`);
-  other headers cross like a browser's would without CORS limits.
+  the main thread, as macOS polls AVPlayer. Request headers no longer go into `souphttpsrc`'s `extra-headers`:
+  libsoup sends those after a redirect to any host, dropping only
+  `Authorization`, so a token in `X-Emby-Token` reached another origin
+  (seen with GStreamer 1.24, 2026-11-16). A URL with headers now plays
+  through `gpui_av_remux::HlsProxy` on `127.0.0.1`, which fetches with
+  libsoup 3 itself (the `soup` module), following redirects by hand and
+  sending the headers to the source's origin only, as the other backends
+  do. The proxy streams media through, ranges included, and rewrites HLS
+  playlists. Only without libsoup 3 do headers still go into
+  `extra-headers` from playbin's `source-setup`; a source element without
+  that property fails the media as `Unsupported`.
   Errors map from GStreamer's error domains, with the HTTP status read
   from souphttpsrc's debug text. GStreamer's demuxers end a file that is
   cut off without an error (the pipeline only says so when the clock

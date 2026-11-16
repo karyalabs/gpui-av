@@ -27,6 +27,8 @@ mod ffi;
 mod pipeline;
 #[cfg(not(target_family = "wasm"))]
 mod session;
+#[cfg(not(target_family = "wasm"))]
+mod soup;
 
 #[cfg(not(target_family = "wasm"))]
 pub use native::GStreamerBackend;
@@ -42,6 +44,8 @@ mod native {
     use crate::ffi::{self, Api};
     use crate::pipeline::Pipeline;
     use crate::session::GstSession;
+    use crate::soup::SoupFetch;
+    use gpui_av_remux::HlsProxy;
 
     /// Plays media with GStreamer's `playbin` and draws it as GPUI images.
     ///
@@ -121,8 +125,28 @@ mod native {
                     ));
                 }
             };
-            let pipeline = Pipeline::new(api, &uri, source.headers())?;
-            Ok(Box::new(GstSession::new(pipeline, events, cx)))
+            // With headers, GStreamer plays our loopback proxy, which sends
+            // them to the source's origin only; souphttpsrc would send them
+            // after a redirect to anywhere.
+            let proxy = match source.location() {
+                Location::Url(url) if !source.headers().is_empty() => {
+                    match SoupFetch::new(url, source.headers()) {
+                        Some(fetch) => Some(HlsProxy::start(url, fetch).map_err(|error| {
+                            Error::new(
+                                ErrorKind::Network,
+                                format!("cannot start the local proxy for {url}: {error}"),
+                            )
+                        })?),
+                        None => None,
+                    }
+                }
+                _ => None,
+            };
+            let pipeline = match &proxy {
+                Some(proxy) => Pipeline::new(api, proxy.url(), &[])?,
+                None => Pipeline::new(api, &uri, source.headers())?,
+            };
+            Ok(Box::new(GstSession::new(pipeline, proxy, events, cx)))
         }
     }
 

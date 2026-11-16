@@ -22,6 +22,7 @@ karya-gpui = []
 # GStreamer, and only this backend fails there (spec 4).
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 gpui-av.workspace = true
+gpui-av-remux.workspace = true
 gpui.workspace = true
 image.workspace = true
 smallvec.workspace = true
