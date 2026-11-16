@@ -24,12 +24,16 @@
 mod fragments;
 mod matroska;
 mod mp4;
+#[cfg(not(target_arch = "wasm32"))]
+mod proxy;
 mod ranges;
 #[cfg(not(target_arch = "wasm32"))]
 mod serve;
 mod sparse;
 
 pub use fragments::fragmented_mp4_length;
+#[cfg(not(target_arch = "wasm32"))]
+pub use proxy::{Fetch, HlsProxy, HttpResponse, resolve_url};
 pub use ranges::{Fetched, RangeReader, RangeSource};
 #[cfg(not(target_arch = "wasm32"))]
 pub use serve::{Failure, FailureKind, HlsServer, Summary};

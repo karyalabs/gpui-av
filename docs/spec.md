@@ -871,7 +871,7 @@ about 2026-11-24) runs beside it and blocks nothing here.
   through our own `AVAssetResourceLoaderDelegate`; headers go only to the
   source's origin. Cost, tier A over local HTTP: median time to `Playing`
   66 ms against 45 ms with the old option, seeks unchanged (median 82 ms
-  against 81). The Matroska and WebM URL path (#33) fetched its ranges through the shared `NSURLSession`, which drops `Authorization` on a redirect but keeps every other header, so a token in a header such as `X-Emby-Token` reached another origin; it now has a session whose delegate applies the same rule as the loader (#46). Open: HLS with headers (fails as `Unsupported`).
+  against 81). The Matroska and WebM URL path (#33) fetched its ranges through the shared `NSURLSession`, which drops `Authorization` on a redirect but keeps every other header, so a token in a header such as `X-Emby-Token` reached another origin; it now has a session whose delegate applies the same rule as the loader (#46). HLS with headers, 2026-11-16 (#47): a URL ending in `.m3u8` with headers plays through `gpui_av_remux::HlsProxy`, a loopback proxy that fetches every playlist, key and segment with the headers (on the source's origin only, through the same session and redirect rule) and rewrites each URI in a playlist to one of its own; nothing is cached, so live playlists stay live. A playlist at a URL not named `.m3u8` still fails as `Unsupported` from the loader.
 
 ## 7. Decisions
 

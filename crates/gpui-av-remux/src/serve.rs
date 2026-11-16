@@ -16,7 +16,7 @@ use crate::{RemuxError, Remuxer};
 
 /// A request that has not sent its headers by then is dropped, so a stuck
 /// client cannot hold a thread.
-const READ_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a request waits for a file opened in the background.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -284,7 +284,7 @@ fn log_failure(what: &str, error: &dyn std::fmt::Display) {
 }
 
 /// 128 random bits from the standard library's hasher keys, as hex.
-fn token() -> String {
+pub(crate) fn token() -> String {
     let half = || RandomState::new().build_hasher().finish();
     format!("{:016x}{:016x}", half(), half())
 }
@@ -314,14 +314,14 @@ fn serve<R: Read + Seek>(stream: TcpStream, shared: &Shared<R>) {
     }
 }
 
-struct Request {
-    method: String,
-    path: String,
-    range: Option<(u64, Option<u64>)>,
-    keep_alive: bool,
+pub(crate) struct Request {
+    pub method: String,
+    pub path: String,
+    pub range: Option<(u64, Option<u64>)>,
+    pub keep_alive: bool,
 }
 
-fn read_request(reader: &mut impl BufRead) -> Option<Request> {
+pub(crate) fn read_request(reader: &mut impl BufRead) -> Option<Request> {
     let mut line = String::new();
     if reader.read_line(&mut line).ok()? == 0 {
         return None;

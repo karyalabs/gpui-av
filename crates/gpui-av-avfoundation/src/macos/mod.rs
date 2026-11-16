@@ -66,7 +66,11 @@ impl Backend for AvFoundationBackend {
                 "the AVFoundation backend must be opened on the main thread",
             )
         })?;
-        let (asset, loader, remuxed) = match remuxed(&source)? {
+        let local = match proxied(&source)? {
+            Some(proxy) => Some(Local::Proxy(proxy)),
+            None => remuxed(&source)?.map(Local::Remux),
+        };
+        let (asset, loader, remuxed) = match local {
             Some(remuxed) => {
                 let url = web_url(remuxed.url())?;
                 // SAFETY: `url` is a valid NSURL, and there are no options.
@@ -87,6 +91,75 @@ impl Backend for AvFoundationBackend {
             asset, loader, remuxed, http, events, mtm, cx,
         )))
     }
+}
+
+/// A local server a source plays from.
+pub(crate) enum Local {
+    /// A Matroska or WebM source, remuxed and served as HLS.
+    Remux(gpui_av_remux::HlsServer),
+    /// HLS with request headers, through a proxy that sends them.
+    Proxy(gpui_av_remux::HlsProxy),
+}
+
+impl Local {
+    fn url(&self) -> &str {
+        match self {
+            Self::Remux(server) => server.url(),
+            Self::Proxy(proxy) => proxy.url(),
+        }
+    }
+
+    /// Why serving failed, when it did: AVFoundation saw only the local
+    /// server's answer.
+    pub(crate) fn failure(&self) -> Option<gpui_av_remux::Failure> {
+        match self {
+            Self::Remux(server) => server.failure(),
+            Self::Proxy(proxy) => proxy.failure(),
+        }
+    }
+
+    /// What the remuxer read from the file's header.
+    pub(crate) fn summary(&self) -> Option<gpui_av_remux::Summary> {
+        match self {
+            Self::Remux(server) => server.summary(),
+            Self::Proxy(_) => None,
+        }
+    }
+}
+
+/// For an HLS URL with request headers, a loopback proxy that fetches the
+/// playlists, keys and segments with them (on the URL's origin only).
+/// AVFoundation's own HLS cannot send headers, and a resource loader cannot
+/// serve a playlist's segments.
+fn proxied(source: &Source) -> Result<Option<gpui_av_remux::HlsProxy>, Error> {
+    let Some(url) = source.as_url() else {
+        return Ok(None);
+    };
+    if source.headers().is_empty() || !names_playlist(url) {
+        return Ok(None);
+    }
+    let requests = remote::Requests::new(url, source.headers()).ok_or_else(|| {
+        Error::new(
+            ErrorKind::Unsupported,
+            format!("not an http or https URL: {url}"),
+        )
+    })?;
+    gpui_av_remux::HlsProxy::start(url, requests)
+        .map(Some)
+        .map_err(|error| {
+            Error::new(
+                ErrorKind::Other,
+                format!("cannot start the local proxy for {url}: {error}"),
+            )
+        })
+}
+
+fn names_playlist(url: &str) -> bool {
+    url.split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .to_ascii_lowercase()
+        .ends_with(".m3u8")
 }
 
 /// For a file that is Matroska or WebM, or a URL named like one, its

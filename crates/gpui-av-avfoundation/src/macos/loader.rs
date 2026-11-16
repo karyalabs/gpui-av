@@ -329,7 +329,7 @@ impl HttpLoader {
             fail(
                 loading,
                 CODE_BASE - UNSUPPORTED,
-                "playlists (HLS) with request headers are not supported yet",
+                "a playlist (HLS) with request headers plays only from a URL ending in .m3u8",
             );
             return false;
         }
