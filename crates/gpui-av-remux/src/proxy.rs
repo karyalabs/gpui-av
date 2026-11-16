@@ -236,7 +236,16 @@ fn respond(
     let Some(upstream) = upstream else {
         return status(writer, "404 Not Found");
     };
-    let response = match shared.fetch.get(&upstream, range) {
+    let fetched = shared.fetch.get(&upstream, range).and_then(|response| {
+        // A player may ask for a playlist in ranges (Media Foundation
+        // does): a playlist is rewritten whole, so it is fetched whole.
+        if range.is_some() && response.status == 206 && is_playlist(&response.body) {
+            shared.fetch.get(&upstream, None)
+        } else {
+            Ok(response)
+        }
+    });
+    let response = match fetched {
         Ok(response) => response,
         Err(error) => {
             shared.keep_failure(Failure {
@@ -264,7 +273,7 @@ fn respond(
         response.url.as_str()
     };
     let playlist = is_playlist(&response.body);
-    let (body, content_type, content_range) = if playlist && range.is_none() {
+    let (body, content_type, content_range) = if playlist {
         let text = String::from_utf8_lossy(&response.body);
         let rewritten = rewrite_playlist(&text, base, |url| shared.local_path(url));
         (
@@ -275,7 +284,7 @@ fn respond(
     } else {
         (response.body, response.content_type, response.content_range)
     };
-    match (response.status, &content_range) {
+    match (if playlist { 200 } else { response.status }, &content_range) {
         (206, Some(content_range)) => write!(
             writer,
             "HTTP/1.1 206 Partial Content\r\nContent-Range: {content_range}\r\n"
@@ -572,7 +581,9 @@ mod tests {
         let master = String::from_utf8(master).expect("text");
         let media_path = master.lines().nth(2).expect("a variant").to_string();
         assert!(media_path.ends_with("/index.m3u8"), "{master}");
-        let (_, media) = get(&local(&media_path), None);
+        // Asked for in a range, a playlist still comes whole and rewritten.
+        let (head, media) = get(&local(&media_path), Some("bytes=0-"));
+        assert!(head.contains("200"), "{head}");
         let media = String::from_utf8(media).expect("text");
         let segment_path = media.lines().nth(2).expect("a segment").to_string();
         let (head, segment) = get(&local(&segment_path), Some("bytes=2-5"));
