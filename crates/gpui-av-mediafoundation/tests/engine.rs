@@ -349,55 +349,111 @@ mod windows_test {
             return;
         };
         let mut files = HashMap::from([("clip.mp4".to_string(), bytes)]);
-        let hls = hls_files(&clip.with_file_name("h264-1280x720-subtitles.mkv"));
-        if let Some(hls) = &hls {
-            files.extend(hls.clone());
+        let remuxed = hls_files(&clip.with_file_name("h264-1280x720-subtitles.mkv"));
+        if let Some(remuxed) = &remuxed {
+            files.extend(remuxed.clone());
+        }
+        let folders = ["hls-ts", "hls-fmp4"].map(|folder| {
+            let files = folder_files(&clip.with_file_name(folder), folder);
+            (folder, files)
+        });
+        for (_, found) in &folders {
+            if let Some(found) = found {
+                files.extend(found.clone());
+            }
         }
         let server = Server::start(files);
+        // (name, route, file, token, expected failure, whether it must pass)
         let mut cases = vec![
-            ("a URL with a token plays", "private", TOKEN, None),
+            (
+                "a URL with a token plays",
+                "private",
+                "clip.mp4",
+                Some(TOKEN),
+                None,
+                true,
+            ),
             (
                 "a wrong token fails as unauthorized",
                 "private",
-                "Bearer wrong",
+                "clip.mp4",
+                Some("Bearer wrong"),
                 Some(ErrorKind::Unauthorized),
+                true,
             ),
             (
                 "a redirect to another origin drops the token",
                 "hop",
-                TOKEN,
+                "clip.mp4",
+                Some(TOKEN),
                 None,
+                true,
             ),
             (
                 "a missing file fails as not found",
                 "missing",
-                TOKEN,
+                "clip.mp4",
+                Some(TOKEN),
                 Some(ErrorKind::NotFound),
+                true,
             ),
         ];
-        if hls.is_some() {
-            cases.push(("HLS with a token plays", "private-hls", TOKEN, None));
-            cases.push((
-                "HLS through a redirect to another origin drops the token",
-                "hop-hls",
-                TOKEN,
-                None,
-            ));
-            cases.push((
-                "HLS with a wrong token fails as unauthorized",
-                "private-hls",
-                "Bearer wrong",
-                Some(ErrorKind::Unauthorized),
-            ));
+        if folders[0].1.is_some() {
+            // MPEG-TS segments, what most servers send: these must play.
+            cases.extend([
+                (
+                    "HLS (TS) with a token plays",
+                    "private",
+                    "hls-ts/index.m3u8",
+                    Some(TOKEN),
+                    None,
+                    true,
+                ),
+                (
+                    "HLS (TS) through a redirect to another origin drops the token",
+                    "hop",
+                    "hls-ts/index.m3u8",
+                    Some(TOKEN),
+                    None,
+                    true,
+                ),
+                (
+                    "HLS (TS) with a wrong token fails as unauthorized",
+                    "private",
+                    "hls-ts/index.m3u8",
+                    Some("Bearer wrong"),
+                    Some(ErrorKind::Unauthorized),
+                    true,
+                ),
+            ]);
         } else {
-            report.check("make HLS from the Matroska clip", false, "no clip");
+            report.check("find the HLS (TS) clip", false, "no hls-ts folder");
         }
-        for (name, route, token, expect) in cases {
-            let url = match route.strip_suffix("-hls") {
-                Some(route) => server.url(route, "hls/index.m3u8"),
-                None => server.url(route, "clip.mp4"),
-            };
-            let source = Source::url(url).header("Authorization", token);
+        // Fragmented MP4 segments, with and without the proxy: for the
+        // record, as the engine's HLS may not take them at all.
+        for file in ["hls-fmp4/index.m3u8", "hls/index.m3u8"] {
+            cases.push((
+                "HLS (fMP4) with a token",
+                "private",
+                file,
+                Some(TOKEN),
+                None,
+                false,
+            ));
+            cases.push((
+                "HLS (fMP4) with no headers",
+                "open",
+                file,
+                None,
+                None,
+                false,
+            ));
+        }
+        for (name, route, file, token, expect, required) in cases {
+            let mut source = Source::url(server.url(route, file));
+            if let Some(token) = token {
+                source = source.header("Authorization", token);
+            }
             let opened = Instant::now();
             let player = cx.new(|cx| {
                 let mut player = VideoPlayer::with_backend(source, backend(), cx);
@@ -416,8 +472,15 @@ mod windows_test {
                 None => state == PlaybackState::Playing,
                 Some(kind) => failure_kind(&state) == Some(kind),
             };
-            report.check(name, ok, (&state, opened.elapsed()));
-            if expect.is_none() && ok {
+            if required {
+                report.check(name, ok, (&state, opened.elapsed()));
+            } else {
+                println!(
+                    "info {name} ({file}): {state:?} after {:?}",
+                    opened.elapsed()
+                );
+            }
+            if required && expect.is_none() && ok {
                 let target = Duration::from_secs(2);
                 player.update(cx, |player, _| player.seek(target));
                 wait(cx, 1500).await;
@@ -447,6 +510,17 @@ mod windows_test {
     }
 
     const TOKEN: &str = "Bearer test-token";
+
+    /// Every file in `folder`, named `prefix/NAME`.
+    fn folder_files(folder: &Path, prefix: &str) -> Option<HashMap<String, Vec<u8>>> {
+        let mut files = HashMap::new();
+        for entry in std::fs::read_dir(folder).ok()? {
+            let path = entry.ok()?.path();
+            let name = path.file_name()?.to_string_lossy().into_owned();
+            files.insert(format!("{prefix}/{name}"), std::fs::read(&path).ok()?);
+        }
+        Some(files)
+    }
 
     /// HLS (fragmented MP4) of a Matroska clip, made by the remuxer, as
     /// `hls/index.m3u8`, `hls/init.mp4` and `hls/N.m4s`.
