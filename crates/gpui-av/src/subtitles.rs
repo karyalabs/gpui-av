@@ -240,8 +240,9 @@ fn strip_markup(line: &str) -> String {
 }
 
 /// Shows the subtitles for `player`: the cue due at its position from a
-/// sidecar file given with [`Captions::subtitles`], or else the text of the
-/// text track chosen inside the media
+/// sidecar file given with [`VideoPlayer::set_subtitles`] (or
+/// [`Captions::subtitles`]), or else the text of the text track chosen
+/// inside the media
 /// ([`VideoPlayer::select_text_track`]). Put it over the
 /// [`video()`](crate::video) element, in a parent with `relative()`: by
 /// default it sits at the bottom centre, as white text on a dark band, and
@@ -295,8 +296,13 @@ impl Styled for Captions {
 impl RenderOnce for Captions {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let player = self.player.read(cx);
-        let text = match &self.subtitles {
+        let own = player
+            .subtitles()
+            .filter(|_| !player.session_draws_subtitles());
+        let text = match self.subtitles.as_ref().or(own) {
             Some(subtitles) => subtitles.text_at(player.position()),
+            // The session draws the sidecar subtitles itself.
+            None if player.subtitles().is_some() => None,
             None => player.text(),
         };
         let band = text.map(|text| {

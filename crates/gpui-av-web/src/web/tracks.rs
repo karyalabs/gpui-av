@@ -5,8 +5,12 @@
 //! The track lists are read by name rather than through typed bindings,
 //! since `audioTracks` is missing from most browsers.
 
-use gpui_av::{Track, TrackKind};
-use wasm_bindgen::JsValue;
+use gpui_av::{Subtitles, Track, TrackKind};
+use wasm_bindgen::{JsCast, JsValue};
+
+/// The property that marks the text track gpui-av adds for sidecar
+/// subtitles, so it is not listed as a track inside the media.
+const SIDECAR_MARK: &str = "gpuiAvSidecar";
 
 /// The text track kinds that are subtitles: the rest (chapters, metadata)
 /// are not for showing.
@@ -62,6 +66,7 @@ fn text_tracks(video: &JsValue) -> Vec<JsValue> {
         .into_iter()
         .filter(|track| {
             get_string(track, "kind").is_some_and(|kind| SHOWN_KINDS.contains(&kind.as_str()))
+                && get(track, SIDECAR_MARK).is_none()
         })
         .collect()
 }
@@ -141,6 +146,54 @@ pub(crate) fn text(video: &JsValue, index: usize) -> Option<String> {
         .filter(|text| !text.is_empty())
         .collect();
     (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+/// Adds `subtitles` to `video` as a text track the browser draws, and
+/// returns it. A text track cannot be removed again, so taking sidecar
+/// subtitles away turns their track off; see [`remove_sidecar`].
+pub(crate) fn add_sidecar(
+    video: &web_sys::HtmlVideoElement,
+    subtitles: &Subtitles,
+) -> Option<JsValue> {
+    let add = get(video, "addTextTrack")?
+        .dyn_into::<js_sys::Function>()
+        .ok()?;
+    let track = add.call1(video, &"subtitles".into()).ok()?;
+    set(&track, SIDECAR_MARK, &JsValue::TRUE);
+    let constructor = get(&js_sys::global(), "VTTCue")?
+        .dyn_into::<js_sys::Function>()
+        .ok()?;
+    let add_cue = get(&track, "addCue")?.dyn_into::<js_sys::Function>().ok()?;
+    for cue in subtitles.cues() {
+        let arguments = js_sys::Array::of3(
+            &cue.start.as_secs_f64().into(),
+            &cue.end.as_secs_f64().into(),
+            &escape(&cue.text).into(),
+        );
+        match js_sys::Reflect::construct(&constructor, &arguments) {
+            Ok(made) => {
+                if add_cue.call1(&track, &made).is_err() {
+                    web_sys::console::warn_1(&"gpui-av: a subtitle cue was refused".into());
+                }
+            }
+            Err(error) => web_sys::console::warn_2(&"gpui-av: could not make a cue".into(), &error),
+        }
+    }
+    set(&track, "mode", &JsValue::from_str("showing"));
+    Some(track)
+}
+
+/// Turns off a track [`add_sidecar`] added.
+pub(crate) fn remove_sidecar(track: &JsValue) {
+    set(track, "mode", &JsValue::from_str("disabled"));
+}
+
+/// Cue text as WebVTT takes it: the parsed text has no markup left, so
+/// what looks like markup is text.
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// WebVTT cue text without its tags (`<i>`, `<c.yellow>`, `<00:01.000>`)

@@ -11,6 +11,7 @@
 use std::path::Path;
 
 use gpui::App;
+use gpui_av::Subtitles;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
@@ -112,6 +113,36 @@ fn arguments() -> Vec<String> {
         }
     }
     arguments
+}
+
+/// The subtitle file beside the clip at `url`, with the same name and a
+/// `.vtt` or `.srt` extension, if the server has one, fetched and parsed.
+pub async fn sidecar_subtitles(url: &str) -> Option<(String, Result<Subtitles, String>)> {
+    let (base, query) = url
+        .split_once('?')
+        .map_or((url, None), |(base, query)| (base, Some(query)));
+    let stem = base
+        .rsplit_once('.')
+        .filter(|(stem, _)| !stem.ends_with('/'))?
+        .0;
+    for extension in ["vtt", "srt"] {
+        let mut candidate = format!("{stem}.{extension}");
+        if let Some(query) = query {
+            candidate = format!("{candidate}?{query}");
+        }
+        if let Ok(text) = fetch_text(&candidate).await {
+            let name = candidate
+                .rsplit('/')
+                .next()
+                .unwrap_or(&candidate)
+                .to_string();
+            return Some((
+                name,
+                Subtitles::parse(&text).map_err(|error| error.to_string()),
+            ));
+        }
+    }
+    None
 }
 
 async fn fetch_text(url: &str) -> Result<String, String> {

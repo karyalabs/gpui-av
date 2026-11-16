@@ -8,7 +8,7 @@ use gpui::{App, Context, EventEmitter, SharedString, Size, Task, Window};
 use crate::backend::{
     Backend, BackendEvent, EventSink, Placement, Session, Stats, default_backend,
 };
-use crate::{Error, ErrorKind, MediaInfo, Source, TrackKind};
+use crate::{Error, ErrorKind, MediaInfo, Source, Subtitles, TrackKind};
 
 /// Where a player is in the life of its media.
 #[derive(Clone, Debug, PartialEq)]
@@ -91,6 +91,8 @@ pub struct VideoPlayer {
     volume: f32,
     muted: bool,
     looping: bool,
+    /// The sidecar subtitles set with `set_subtitles`.
+    subtitles: Option<Subtitles>,
     _events: Option<Task<()>>,
 }
 
@@ -146,6 +148,7 @@ impl VideoPlayer {
             volume: 1.0,
             muted: false,
             looping: false,
+            subtitles: None,
             _events: Some(pump),
         }
     }
@@ -175,6 +178,7 @@ impl VideoPlayer {
             volume: 1.0,
             muted: false,
             looping: false,
+            subtitles: None,
             _events: Some(announce),
         }
     }
@@ -288,6 +292,32 @@ impl VideoPlayer {
         if let Some(session) = &mut self.session {
             session.select_track(TrackKind::Text, index);
         }
+    }
+
+    /// Shows these sidecar subtitles with the picture, or none. On
+    /// backends that draw into the window, [`captions()`](crate::captions)
+    /// draws them over the [`video()`](crate::video) element; a backend
+    /// whose picture GPUI cannot draw over (the web's) draws them itself.
+    /// Either way, this is the way to show a subtitle file on every
+    /// backend.
+    pub fn set_subtitles(&mut self, subtitles: Option<Subtitles>, cx: &mut Context<Self>) {
+        if let Some(session) = &mut self.session {
+            session.set_subtitles(subtitles.as_ref());
+        }
+        self.subtitles = subtitles;
+        cx.notify();
+    }
+
+    /// The sidecar subtitles set with [`set_subtitles`](Self::set_subtitles).
+    pub fn subtitles(&self) -> Option<&Subtitles> {
+        self.subtitles.as_ref()
+    }
+
+    /// Whether the session draws the sidecar subtitles itself.
+    pub(crate) fn session_draws_subtitles(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|session| session.draws_subtitles())
     }
 
     /// The subtitle from the chosen text track inside the media that

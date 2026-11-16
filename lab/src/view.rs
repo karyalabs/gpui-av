@@ -75,6 +75,9 @@ struct Playing {
     /// A `.vtt` or `.srt` file beside the clip: its name, and the cues or
     /// why they could not be read.
     subtitles: Option<(String, Result<Subtitles, String>)>,
+    /// Fetches the subtitle file beside a URL, in a browser.
+    #[cfg(target_family = "wasm")]
+    _sidecar: Option<Task<()>>,
     _subscriptions: [Subscription; 2],
     /// Redraws the stats while the media moves: a presenter that shows its
     /// frames outside the window asks for no window frames, so nothing
@@ -188,8 +191,32 @@ impl LabView {
             player.set_volume(settings.volume, cx);
             player.set_muted(settings.muted, cx);
             player.set_looping(settings.looping, cx);
+            if let Some((_, Ok(subtitles))) = &subtitles {
+                player.set_subtitles(Some(subtitles.clone()), cx);
+            }
             player.play();
             player
+        });
+        #[cfg(target_family = "wasm")]
+        let sidecar = clip.source.as_url().map(str::to_string).map(|url| {
+            cx.spawn(async move |this, cx| {
+                let Some((name, parsed)) = crate::entry::sidecar_subtitles(&url).await else {
+                    return;
+                };
+                this.update(cx, |this, cx| {
+                    let Some(playing) = &mut this.playing else {
+                        return;
+                    };
+                    if let Ok(subtitles) = &parsed {
+                        playing.player.update(cx, |player, cx| {
+                            player.set_subtitles(Some(subtitles.clone()), cx)
+                        });
+                    }
+                    playing.subtitles = Some((name, parsed));
+                    cx.notify();
+                })
+                .ok();
+            })
         });
         let subscriptions = [
             cx.observe(&player, |_, _, cx| cx.notify()),
@@ -229,6 +256,8 @@ impl LabView {
             player,
             meter: Meter::new(),
             subtitles,
+            #[cfg(target_family = "wasm")]
+            _sidecar: sidecar,
             _subscriptions: subscriptions,
             _ticker: ticker,
         });
@@ -571,12 +600,6 @@ impl LabView {
         ))
     }
 
-    /// The current clip's subtitles, when it has some that parsed.
-    fn subtitles(&self) -> Option<&Subtitles> {
-        let (_, subtitles) = self.playing.as_ref()?.subtitles.as_ref()?;
-        subtitles.as_ref().ok()
-    }
-
     /// The area the picture shows in.
     fn stage(&self) -> Stateful<Div> {
         let stage = div().id("stage").flex_1().min_h_0().bg(rgb(0x000000));
@@ -584,15 +607,10 @@ impl LabView {
             return stage;
         };
         match self.stage {
-            Stage::Fill => {
-                stage
-                    .relative()
-                    .child(video(player).size_full())
-                    .child(match self.subtitles() {
-                        Some(subtitles) => captions(player).subtitles(subtitles),
-                        None => captions(player),
-                    })
-            }
+            Stage::Fill => stage
+                .relative()
+                .child(video(player).size_full())
+                .child(captions(player)),
             Stage::Scroll => {
                 let note = |text: &'static str| {
                     div()
