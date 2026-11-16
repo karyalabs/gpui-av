@@ -1,15 +1,12 @@
 # The Windows backend on a real Windows machine. Not part of `ci`: it runs
-# only when the Windows backend changes, or by hand (Actions, "Windows",
-# "Run workflow"), and nothing waits for it to merge. It plays clips that
+# only by hand (Actions, "Windows", "Run workflow"), sparingly, since a
+# private repository's Windows minutes count double against the plan's
+# included minutes. Nothing waits for it to merge. It plays clips that
 # ffmpeg makes on the runner; no video is committed.
 name: Windows
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - "crates/gpui-av-mediafoundation/**"
-      - ".github/workflows/windows.yml"
 
 concurrency:
   group: windows-${{ github.ref }}
