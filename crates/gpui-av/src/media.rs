@@ -25,6 +25,35 @@ pub struct MediaInfo {
     pub color: ColorInfo,
     /// The audio and text tracks inside the media, in the order the
     /// container lists each kind. Empty when the backend cannot list them.
+    ///
+    /// Picking the French sound and the English subtitles, where the media
+    /// has them:
+    ///
+    /// ```no_run
+    /// # use gpui::{App, Entity};
+    /// # use gpui_av::{TrackKind, VideoPlayer};
+    /// # fn example(player: &Entity<VideoPlayer>, cx: &mut App) {
+    /// player.update(cx, |player, _cx| {
+    ///     let tracks = player.info().tracks.clone();
+    ///     let find = |kind, language: &str| {
+    ///         tracks
+    ///             .iter()
+    ///             .find(|track| {
+    ///                 track.kind == kind
+    ///                     && track
+    ///                         .language
+    ///                         .as_deref()
+    ///                         .is_some_and(|code| code.starts_with(language))
+    ///             })
+    ///             .map(|track| track.index)
+    ///     };
+    ///     if let Some(index) = find(TrackKind::Audio, "fr") {
+    ///         player.select_audio_track(index);
+    ///     }
+    ///     player.select_text_track(find(TrackKind::Text, "en"));
+    /// });
+    /// # }
+    /// ```
     pub tracks: Vec<Track>,
     /// The audio track playing, as an index into the audio tracks.
     /// `None` when there is no audio or the backend cannot tell.

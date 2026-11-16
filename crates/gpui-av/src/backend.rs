@@ -22,6 +22,86 @@ use crate::{Error, MediaInfo, PlaybackState, Source, TrackKind};
 /// A backend is a factory; it holds no per-media state. An app sets one as
 /// the default with [`set_default_backend`], or hands one to
 /// [`VideoPlayer::with_backend`](crate::VideoPlayer::with_backend).
+///
+/// A backend of its own takes two small types. This one plays ten seconds
+/// of nothing, on a clock that only runs while it plays:
+///
+/// ```
+/// # use std::time::{Duration, Instant};
+/// # use gpui::{App, Window};
+/// # use gpui_av::{
+/// #     Backend, Error, EventSink, MediaInfo, Placement, PlaybackState, Session, Source,
+/// # };
+/// struct Silence;
+///
+/// impl Backend for Silence {
+///     fn name(&self) -> &'static str {
+///         "silence"
+///     }
+///
+///     fn open(
+///         &self,
+///         _source: Source,
+///         events: EventSink,
+///         _cx: &mut App,
+///     ) -> Result<Box<dyn Session>, Error> {
+///         let mut info = MediaInfo::default();
+///         info.duration = Some(Duration::from_secs(10));
+///         info.has_audio = Some(true);
+///         events.info(info);
+///         events.state(PlaybackState::Ready);
+///         Ok(Box::new(SilenceSession {
+///             events,
+///             played: Duration::ZERO,
+///             since: None,
+///         }))
+///     }
+/// }
+///
+/// struct SilenceSession {
+///     events: EventSink,
+///     /// Time played before the current run.
+///     played: Duration,
+///     /// When the current run started, while playing.
+///     since: Option<Instant>,
+/// }
+///
+/// impl Session for SilenceSession {
+///     fn play(&mut self) {
+///         self.since.get_or_insert_with(Instant::now);
+///         self.events.state(PlaybackState::Playing);
+///     }
+///
+///     fn pause(&mut self) {
+///         self.played = self.position();
+///         self.since = None;
+///         self.events.state(PlaybackState::Paused);
+///     }
+///
+///     fn seek(&mut self, position: Duration) {
+///         self.played = position.min(Duration::from_secs(10));
+///         self.since = self.since.map(|_| Instant::now());
+///         self.events.seeked(self.played);
+///     }
+///
+///     fn set_volume(&mut self, _volume: f32) {}
+///     fn set_muted(&mut self, _muted: bool) {}
+///     fn set_looping(&mut self, _looping: bool) {}
+///
+///     fn position(&self) -> Duration {
+///         let running = self.since.map_or(Duration::ZERO, |since| since.elapsed());
+///         (self.played + running).min(Duration::from_secs(10))
+///     }
+///
+///     // Nothing to draw: a session with a picture paints it here, at
+///     // `placement.bounds`, or moves its own layer there.
+///     fn paint(&mut self, _placement: Placement, _window: &mut Window, _cx: &mut App) {}
+/// }
+/// ```
+///
+/// A real session also reports [`PlaybackState::Ended`] at the end and
+/// [`PlaybackState::Failed`] when loading or decoding fails, both through
+/// its [`EventSink`].
 pub trait Backend: 'static {
     /// A short stable name for stats and logs, such as `"avfoundation"`.
     fn name(&self) -> &'static str;
