@@ -438,16 +438,9 @@ mod windows_test {
                 file,
                 Some(TOKEN),
                 None,
-                false,
+                true,
             ));
-            cases.push((
-                "HLS (fMP4) with no headers",
-                "open",
-                file,
-                None,
-                None,
-                false,
-            ));
+            cases.push(("HLS (fMP4) with no headers", "open", file, None, None, true));
         }
         for (name, route, file, token, expect, required) in cases {
             let mut source = Source::url(server.url(route, file));
