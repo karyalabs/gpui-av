@@ -368,6 +368,58 @@ const DIRECTORIES: [&str; 4] = [
 #[cfg(not(target_os = "macos"))]
 const DIRECTORIES: [&str; 0] = [];
 
+/// Lets Windows find libraries in `directory` for the rest of the
+/// process: GStreamer loads its plugins later, and they need the libraries
+/// beside GStreamer's own, which are not on `PATH`.
+#[cfg(target_os = "windows")]
+fn add_dll_directory(directory: &std::path::Path) {
+    use std::os::windows::ffi::OsStrExt;
+    static DONE: OnceLock<()> = OnceLock::new();
+    DONE.get_or_init(|| {
+        let wide: Vec<u16> = directory
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        // SAFETY: kernel32 is loaded in every process, and
+        // `SetDllDirectoryW` takes a null-terminated wide string that it
+        // copies.
+        let set = unsafe {
+            Library::new("kernel32.dll").and_then(|kernel| {
+                let set: libloading::Symbol<unsafe extern "system" fn(*const u16) -> i32> =
+                    kernel.get(b"SetDllDirectoryW\0")?;
+                Ok(set(wide.as_ptr()))
+            })
+        };
+        if !matches!(set, Ok(result) if result != 0) {
+            eprintln!(
+                "gpui-av-gstreamer: could not add {} to the library search path",
+                directory.display()
+            );
+        }
+    });
+}
+
+/// Where the official GStreamer installer puts its libraries on Windows:
+/// the folder its environment variable names, else the default one. The
+/// installer does not add it to `PATH`.
+#[cfg(target_os = "windows")]
+fn windows_directories() -> Vec<std::path::PathBuf> {
+    let mut directories = Vec::new();
+    for variable in [
+        "GSTREAMER_1_0_ROOT_MSVC_X86_64",
+        "GSTREAMER_1_0_ROOT_X86_64",
+    ] {
+        if let Some(root) = std::env::var_os(variable) {
+            directories.push(std::path::Path::new(&root).join("bin"));
+        }
+    }
+    directories.push(std::path::PathBuf::from(
+        r"C:\Program Files\gstreamer\1.0\msvc_x86_64\bin",
+    ));
+    directories
+}
+
 /// Loads `name` from the loader's own path, or else from the first of
 /// [`DIRECTORIES`] that has it.
 fn open(name: &str) -> Result<Library, String> {
@@ -384,6 +436,25 @@ fn open(name: &str) -> Result<Library, String> {
             // SAFETY: as above.
             return unsafe { Library::new(&path) }
                 .map_err(|error| format!("{}: {error}", path.display()));
+        }
+    }
+    #[cfg(target_os = "windows")]
+    for directory in windows_directories() {
+        let path = directory.join(name);
+        if path.exists() {
+            add_dll_directory(&directory);
+            // The libraries GStreamer's own need sit beside it, and Windows
+            // only looks there for a library loaded by path when told to.
+            const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x8;
+            // SAFETY: as above.
+            return unsafe {
+                libloading::os::windows::Library::load_with_flags(
+                    &path,
+                    LOAD_WITH_ALTERED_SEARCH_PATH,
+                )
+            }
+            .map(Library::from)
+            .map_err(|error| format!("{}: {error}", path.display()));
         }
     }
     Err(format!("{name}: {error}"))

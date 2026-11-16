@@ -48,9 +48,34 @@ jobs:
         run: |
           cargo run --locked --release -p gpui-av-lab -- \
             --bench corpus/tier-a.json --clips clips --backend mediafoundation --out bench-windows.json
+      - name: Make the tier B clips
+        continue-on-error: true
+        shell: bash
+        run: scripts/make-tier-b.sh clips-b
+      - name: The lab's bench on tier B, for the coverage table
+        continue-on-error: true
+        shell: bash
+        run: |
+          cargo run --locked --release -p gpui-av-lab -- \
+            --bench corpus/tier-b.json --clips clips-b --backend mediafoundation --out bench-windows-b.json
+      - name: GStreamer, for the fallback after Media Foundation
+        continue-on-error: true
+        run: choco install gstreamer -y --no-progress
+      - name: Where GStreamer went
+        continue-on-error: true
+        shell: bash
+        run: |
+          ls "/c/Program Files/gstreamer/1.0/msvc_x86_64/bin" | grep -c dll || true
+          ls "/c/Program Files/gstreamer/1.0/msvc_x86_64/lib/gstreamer-1.0" | grep -E "libav|vpx|dav1d|aom|opus|matroska|isomp4" || true
+      - name: The lab's bench on tier B through the fallback
+        continue-on-error: true
+        shell: bash
+        run: |
+          cargo run --locked --release -p gpui-av-lab -- \
+            --bench corpus/tier-b.json --clips clips-b --backend fallback --out bench-windows-b-fallback.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: bench-windows
-          path: bench-windows.json
+          path: bench-windows*.json
           if-no-files-found: ignore

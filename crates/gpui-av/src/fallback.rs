@@ -19,7 +19,8 @@ use crate::{Error, ErrorKind, PlaybackState, Source, Subtitles, TrackKind};
 /// the same source, and the commands the app gave so far (play or pause,
 /// a seek, volume, mute, looping) are given to it again. Any other failure
 /// is final: a missing file or a refused token would fail on every backend
-/// alike. Once one backend has the media ready, it keeps it.
+/// alike. Once one backend has the media ready (any state but loading or
+/// buffering), it keeps it.
 ///
 /// Media info is held back until a backend has the media ready, so a
 /// player never shows a picture size or duration from a backend that then
@@ -195,7 +196,10 @@ impl Chain {
         }
         match event {
             BackendEvent::Info(_) => this.held_info = Some(event),
-            BackendEvent::State(PlaybackState::Loading) => {}
+            // Waiting for data before the media is ready is still loading:
+            // Media Foundation reports it as soon as play is asked for,
+            // ahead of finding it has no decoder for the media.
+            BackendEvent::State(PlaybackState::Loading | PlaybackState::Buffering) => {}
             BackendEvent::State(PlaybackState::Failed(error))
                 if error.kind() == ErrorKind::Unsupported =>
             {
