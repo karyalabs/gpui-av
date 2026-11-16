@@ -21,6 +21,7 @@
 //! # }
 //! ```
 
+mod fragments;
 mod matroska;
 mod mp4;
 mod ranges;
@@ -28,6 +29,7 @@ mod ranges;
 mod serve;
 mod sparse;
 
+pub use fragments::fragmented_mp4_length;
 pub use ranges::{Fetched, RangeReader, RangeSource};
 #[cfg(not(target_arch = "wasm32"))]
 pub use serve::{Failure, FailureKind, HlsServer, Summary};

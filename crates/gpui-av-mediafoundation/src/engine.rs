@@ -80,11 +80,13 @@ impl Backend for MediaFoundationBackend {
         cx: &mut App,
     ) -> Result<Box<dyn Session>, Error> {
         let mut ranges = None;
+        let mut file = None;
         let url = match source.location() {
             Location::File(path) => {
                 let path = std::path::absolute(path).map_err(|error| {
                     Error::new(ErrorKind::NotFound, format!("{}: {error}", path.display()))
                 })?;
+                file = Some(path.clone());
                 path.to_string_lossy().into_owned()
             }
             Location::Url(url) => {
@@ -106,7 +108,7 @@ impl Backend for MediaFoundationBackend {
             }
         };
         startup().map_err(|error| Error::new(ErrorKind::Unsupported, error.clone()))?;
-        MfSession::open(&url, ranges, events, cx)
+        MfSession::open(&url, ranges, file, events, cx)
             .map(|session| Box::new(session) as Box<dyn Session>)
             .map_err(|error| Error::new(ErrorKind::Other, format!("media engine: {error}")))
     }
@@ -232,6 +234,8 @@ struct MfSession {
     _events: gpui::Task<()>,
     /// Opening a URL with headers: the first request, then the source.
     _source: Option<gpui::Task<()>>,
+    /// Working out the length of a fragmented MP4 file the engine cannot.
+    _length: Option<gpui::Task<()>>,
 }
 
 struct Inner {
@@ -282,6 +286,9 @@ struct Inner {
     /// The last failed read of our own byte stream, which says more than
     /// the engine's error.
     http_error: Option<LastError>,
+    /// The length of a fragmented MP4 with an empty header, added up from
+    /// its fragments: the engine reports none for one.
+    fragments_length: Option<Duration>,
 }
 
 /// The presentation times of the first and last frame of a run of frames,
@@ -320,6 +327,7 @@ impl MfSession {
     fn open(
         url: &str,
         ranges: Option<UrlRanges>,
+        file: Option<std::path::PathBuf>,
         sink: EventSink,
         cx: &mut App,
     ) -> windows::core::Result<Self> {
@@ -406,6 +414,7 @@ impl MfSession {
             waiting_for_source: ranges.is_some(),
             wanted_playing: None,
             http_error: None,
+            fragments_length: None,
         }));
         inner.borrow().sink.state(PlaybackState::Loading);
         let weak: Weak<RefCell<Inner>> = Rc::downgrade(&inner);
@@ -426,10 +435,34 @@ impl MfSession {
                 }
             })
         });
+        let length = file.map(|path| {
+            let reading = cx.background_spawn(async move {
+                let file = std::fs::File::open(&path)?;
+                gpui_av_remux::fragmented_mp4_length(&mut std::io::BufReader::new(file))
+            });
+            let weak = Rc::downgrade(&inner);
+            cx.spawn(async move |_| {
+                let length = match reading.await {
+                    Ok(length) => length,
+                    Err(error) => {
+                        log(&format!("reading the fragments' length failed: {error}"));
+                        None
+                    }
+                };
+                if let (Some(length), Some(inner)) = (length, weak.upgrade()) {
+                    let mut inner = inner.borrow_mut();
+                    inner.fragments_length = Some(length);
+                    if inner.loaded && !inner.failed {
+                        inner.report_info();
+                    }
+                }
+            })
+        });
         Ok(Self {
             inner,
             _events: events,
             _source: source,
+            _length: length,
         })
     }
 }
@@ -621,7 +654,9 @@ impl Inner {
                 && height > 0)
                 .then(|| size(width, height));
             MediaInfo {
-                duration: seconds(self.engine.GetDuration()),
+                duration: seconds(self.engine.GetDuration())
+                    .filter(|duration| !duration.is_zero())
+                    .or(self.fragments_length),
                 natural_size,
                 has_video,
                 has_audio: Some(self.engine.HasAudio().as_bool()),
