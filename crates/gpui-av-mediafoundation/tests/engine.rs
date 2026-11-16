@@ -16,8 +16,11 @@ fn main() {
 
 #[cfg(windows)]
 mod windows_test {
-    use std::path::PathBuf;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::path::{Path, PathBuf};
     use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     use gpui::{App, AppContext, AsyncApp, Entity};
@@ -333,14 +336,223 @@ mod windows_test {
             println!("info an audio-only file: {state:?}");
         }
 
-        let with_header = Source::url("https://example.test/clip.mp4").header("Authorization", "x");
-        let player = cx.new(|cx| VideoPlayer::with_backend(with_header, backend(), cx));
-        let state = player.read_with(cx, |player, _| player.state().clone());
+        http_checks(&clip, report, cx).await;
+    }
+
+    /// URLs with request headers, through the backend's own byte stream:
+    /// a token the server needs, a wrong one, and a redirect to another
+    /// origin, which must not get the token.
+    async fn http_checks(clip: &Path, report: &mut Report, cx: &mut AsyncApp) {
+        let Ok(bytes) = std::fs::read(clip) else {
+            report.check("read the clip", false, clip);
+            return;
+        };
+        let server = Server::start(bytes);
+        for (name, route, token, expect) in [
+            ("a URL with a token plays", "private", TOKEN, None),
+            (
+                "a wrong token fails as unauthorized",
+                "private",
+                "Bearer wrong",
+                Some(ErrorKind::Unauthorized),
+            ),
+            (
+                "a redirect to another origin drops the token",
+                "hop",
+                TOKEN,
+                None,
+            ),
+            (
+                "a missing file fails as not found",
+                "missing",
+                TOKEN,
+                Some(ErrorKind::NotFound),
+            ),
+        ] {
+            let source = Source::url(server.url(route)).header("Authorization", token);
+            let opened = Instant::now();
+            let player = cx.new(|cx| {
+                let mut player = VideoPlayer::with_backend(source, backend(), cx);
+                player.set_muted(true, cx);
+                player.play();
+                player
+            });
+            let state = wait_for(
+                &player,
+                Duration::from_secs(15),
+                |state| matches!(state, PlaybackState::Playing | PlaybackState::Failed(_)),
+                cx,
+            )
+            .await;
+            let ok = match expect {
+                None => state == PlaybackState::Playing,
+                Some(kind) => failure_kind(&state) == Some(kind),
+            };
+            report.check(name, ok, (&state, opened.elapsed()));
+            if expect.is_none() && ok {
+                let target = Duration::from_secs(2);
+                player.update(cx, |player, _| player.seek(target));
+                wait(cx, 1500).await;
+                let position = player.read_with(cx, |player, _| player.position());
+                report.check(
+                    &format!("{name}: it seeks over HTTP"),
+                    position >= target,
+                    position,
+                );
+            }
+            cx.update(|_| drop(player));
+        }
+        let leaked = server
+            .log
+            .lock()
+            .map(|log| {
+                log.iter()
+                    .filter(|(path, authorized)| path.starts_with("/open/") && *authorized)
+                    .count()
+            })
+            .unwrap_or_default();
         report.check(
-            "request headers are refused, not dropped",
-            failure_kind(&state) == Some(ErrorKind::Unsupported),
-            &state,
+            "the token never reached the other origin",
+            leaked == 0,
+            leaked,
         );
+    }
+
+    const TOKEN: &str = "Bearer test-token";
+
+    /// A local server with the clip at `/private/clip.mp4` (needs the
+    /// token), `/hop/clip.mp4` (needs it, and redirects to `/open/` on the
+    /// other name for this machine) and `/open/clip.mp4` (refuses any
+    /// `Authorization`, as a signed storage URL does). It logs each path
+    /// and whether `Authorization` came with it.
+    struct Server {
+        port: u16,
+        log: Arc<Mutex<Vec<(String, bool)>>>,
+    }
+
+    impl Server {
+        fn start(clip: Vec<u8>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+            let port = listener.local_addr().expect("address").port();
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let (clip, served) = (Arc::new(clip), log.clone());
+            std::thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let (clip, log) = (clip.clone(), served.clone());
+                    std::thread::spawn(move || {
+                        if let Err(error) = serve(stream, port, &clip, &log) {
+                            println!("info the test server: {error}");
+                        }
+                    });
+                }
+            });
+            Self { port, log }
+        }
+
+        fn url(&self, route: &str) -> String {
+            format!("http://127.0.0.1:{}/{route}/clip.mp4", self.port)
+        }
+    }
+
+    fn serve(
+        stream: TcpStream,
+        port: u16,
+        clip: &[u8],
+        log: &Mutex<Vec<(String, bool)>>,
+    ) -> std::io::Result<()> {
+        stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+        let mut reader = BufReader::new(stream.try_clone()?);
+        let mut writer = stream;
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line)? == 0 {
+                return Ok(());
+            }
+            let path = line.split_whitespace().nth(1).unwrap_or("").to_string();
+            let (mut range, mut auth, mut host) = (None, None, String::new());
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header)? == 0 {
+                    return Ok(());
+                }
+                let header = header.trim_end();
+                if header.is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = header.split_once(':') {
+                    let value = value.trim().to_string();
+                    match name.trim().to_ascii_lowercase().as_str() {
+                        "range" => range = Some(value),
+                        "authorization" => auth = Some(value),
+                        "host" => host = value,
+                        _ => {}
+                    }
+                }
+            }
+            if let Ok(mut log) = log.lock() {
+                log.push((path.clone(), auth.is_some()));
+            }
+            let empty = |writer: &mut TcpStream, status: &str, extra: &str| {
+                write!(
+                    writer,
+                    "HTTP/1.1 {status}\r\n{extra}Content-Length: 0\r\n\r\n"
+                )
+            };
+            let authorized = auth.as_deref() == Some(TOKEN);
+            let route = path.trim_start_matches('/').split('/').next().unwrap_or("");
+            match route {
+                "private" | "hop" | "missing" if !authorized => {
+                    empty(&mut writer, "401 Unauthorized", "")?;
+                    continue;
+                }
+                "hop" => {
+                    let other = if host.starts_with("127.0.0.1") {
+                        "localhost"
+                    } else {
+                        "127.0.0.1"
+                    };
+                    let location = format!("Location: http://{other}:{port}/open/clip.mp4\r\n");
+                    empty(&mut writer, "302 Found", &location)?;
+                    continue;
+                }
+                "open" if auth.is_some() => {
+                    empty(&mut writer, "400 Bad Request", "")?;
+                    continue;
+                }
+                "private" | "open" => {}
+                _ => {
+                    empty(&mut writer, "404 Not Found", "")?;
+                    continue;
+                }
+            }
+            let size = clip.len() as u64;
+            let (start, end) = range
+                .as_deref()
+                .and_then(|range| parse_range(range, size))
+                .unwrap_or((0, size.saturating_sub(1)));
+            if range.is_some() {
+                write!(
+                    writer,
+                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{end}/{size}\r\n"
+                )?;
+            } else {
+                write!(writer, "HTTP/1.1 200 OK\r\n")?;
+            }
+            write!(
+                writer,
+                "Accept-Ranges: bytes\r\nContent-Type: video/mp4\r\nContent-Length: {}\r\n\r\n",
+                end - start + 1
+            )?;
+            writer.write_all(&clip[start as usize..=end as usize])?;
+        }
+    }
+
+    fn parse_range(range: &str, size: u64) -> Option<(u64, u64)> {
+        let (start, end) = range.strip_prefix("bytes=")?.split_once('-')?;
+        let last = size.checked_sub(1)?;
+        let start: u64 = start.parse().ok()?;
+        let end = end.parse::<u64>().map_or(last, |end| end.min(last));
+        (start <= end).then_some((start, end))
     }
 
     pub fn main() {

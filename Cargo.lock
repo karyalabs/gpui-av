@@ -2062,6 +2062,7 @@ version = "0.0.0"
 dependencies = [
  "async-channel",
  "gpui-av",
+ "gpui-av-remux",
  "gpui-pre",
  "gpui-pre-platform",
  "image",
