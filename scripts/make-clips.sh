@@ -86,6 +86,12 @@ printf '1\n00:00:01,000 --> 00:00:04,000\nThe first line\n\n2\n00:00:05,000 --> 
   -metadata:s:a:0 language=eng -metadata:s:a:1 language=fra \
   -metadata:s:a:1 title=Commentary -metadata:s:s:0 language=eng \
   -movflags +faststart "$OUT/h264-1280x720-tracks.mp4"
+# The same subtitles as SubRip in Matroska, which Windows' Matroska source
+# hands on as text where its MP4 source drops 3GPP text.
+# shellcheck disable=SC2046
+"${FF[@]}" $(picture 1280x720 30) "${TONE[@]}" -i "$OUT/tracks.srt" -t 10 \
+  -map 0:v -map 1:a -map 2:s "${AUDIO[@]}" "${H264[@]}" "${BT709[@]}" -c:s srt \
+  -metadata:s:s:0 language=eng "$OUT/h264-1280x720-subtitles.mkv"
 rm "$OUT/tracks.srt"
 
 # Audio only.
