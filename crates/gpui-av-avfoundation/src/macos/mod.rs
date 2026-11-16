@@ -96,10 +96,12 @@ fn remuxed(source: &Source) -> Result<Option<gpui_av_remux::HlsServer>, Error> {
         if !names_matroska(url) {
             return Ok(None);
         }
-        let ranges = remote::UrlRanges {
-            url: url.to_string(),
-            headers: source.headers().to_vec(),
-        };
+        let ranges = remote::UrlRanges::new(url, source.headers()).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Unsupported,
+                format!("not an http or https URL: {url}"),
+            )
+        })?;
         // Reading the header takes a few requests: not on the main thread.
         let server = gpui_av_remux::HlsServer::open_in_background(move || {
             gpui_av_remux::Remuxer::open(gpui_av_remux::RangeReader::new(ranges))

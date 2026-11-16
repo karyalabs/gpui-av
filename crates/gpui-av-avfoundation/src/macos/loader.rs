@@ -64,14 +64,14 @@ const PREFIX: &str = "gpuiav-";
 
 /// The real URL's scheme, host and port: headers go only where these match.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Origin {
+pub(crate) struct Origin {
     scheme: String,
     host: String,
     port: Option<u16>,
 }
 
 impl Origin {
-    fn of(url: &NSURL) -> Option<Self> {
+    pub(crate) fn of(url: &NSURL) -> Option<Self> {
         let scheme = url.scheme()?.to_string().to_ascii_lowercase();
         let host = url.host()?.to_string().to_ascii_lowercase();
         let port = url
@@ -298,23 +298,9 @@ impl HttpLoader {
         unsafe { session.getAllTasksWithCompletionHandler(&block) };
     }
 
-    /// The request to follow a redirect with. NSURLSession drops
-    /// `Authorization` on every redirect, so the source's headers are put
-    /// back on the source's origin, and removed (all of them) anywhere else.
-    /// `Range` stays: it is the request itself.
     fn redirected(&self, request: &NSURLRequest) -> Retained<NSURLRequest> {
         let state = self.ivars();
-        let same_origin = request
-            .URL()
-            .and_then(|url| Origin::of(&url))
-            .is_some_and(|origin| origin == state.origin);
-        // SAFETY: mutableCopy of an NSURLRequest is an NSMutableURLRequest.
-        let next: Retained<NSMutableURLRequest> = unsafe { msg_send![request, mutableCopy] };
-        for (name, value) in &state.headers {
-            let value = same_origin.then(|| NSString::from_str(value));
-            next.setValue_forHTTPHeaderField(value.as_deref(), &NSString::from_str(name));
-        }
-        Retained::into_super(next)
+        redirected(request, &state.origin, &state.headers)
     }
 
     /// Fills in what AVFoundation asked about the resource, or fails the
@@ -383,6 +369,28 @@ impl HttpLoader {
         }
         true
     }
+}
+
+/// The request to follow a redirect with. NSURLSession drops
+/// `Authorization` on every redirect but keeps every other header, so the
+/// source's headers are put back on the source's origin, and removed (all of
+/// them) anywhere else. `Range` stays: it is the request itself.
+pub(crate) fn redirected(
+    request: &NSURLRequest,
+    origin: &Origin,
+    headers: &[(String, String)],
+) -> Retained<NSURLRequest> {
+    let same_origin = request
+        .URL()
+        .and_then(|url| Origin::of(&url))
+        .is_some_and(|to| &to == origin);
+    // SAFETY: mutableCopy of an NSURLRequest is an NSMutableURLRequest.
+    let next: Retained<NSMutableURLRequest> = unsafe { msg_send![request, mutableCopy] };
+    for (name, value) in headers {
+        let value = same_origin.then(|| NSString::from_str(value));
+        next.setValue_forHTTPHeaderField(value.as_deref(), &NSString::from_str(name));
+    }
+    Retained::into_super(next)
 }
 
 struct SessionPtr(Retained<NSURLSession>);
