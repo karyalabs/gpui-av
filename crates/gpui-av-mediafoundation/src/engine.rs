@@ -80,6 +80,7 @@ impl Backend for MediaFoundationBackend {
         cx: &mut App,
     ) -> Result<Box<dyn Session>, Error> {
         let mut ranges = None;
+        let mut proxy = None;
         let mut file = None;
         let url = match source.location() {
             Location::File(path) => {
@@ -96,9 +97,27 @@ impl Backend for MediaFoundationBackend {
                         .iter()
                         .map(|(name, value)| (name.to_string(), value.to_string()))
                         .collect();
-                    ranges = Some(UrlRanges::new(url, &headers)?);
+                    let requests = UrlRanges::new(url, &headers)?;
+                    if names_playlist(url) {
+                        // HLS: the engine loads the playlists and segments
+                        // itself, from the proxy, which sends the headers.
+                        let started = gpui_av_remux::HlsProxy::start(url, requests);
+                        let started = started.map_err(|error| {
+                            Error::new(
+                                ErrorKind::Other,
+                                format!("cannot start the local proxy for {url}: {error}"),
+                            )
+                        })?;
+                        let local = started.url().to_string();
+                        proxy = Some(started);
+                        local
+                    } else {
+                        ranges = Some(requests);
+                        url.clone()
+                    }
+                } else {
+                    url.clone()
                 }
-                url.clone()
             }
             _ => {
                 return Err(Error::new(
@@ -108,7 +127,7 @@ impl Backend for MediaFoundationBackend {
             }
         };
         startup().map_err(|error| Error::new(ErrorKind::Unsupported, error.clone()))?;
-        MfSession::open(&url, ranges, file, events, cx)
+        MfSession::open(&url, ranges, proxy, file, events, cx)
             .map(|session| Box::new(session) as Box<dyn Session>)
             .map_err(|error| Error::new(ErrorKind::Other, format!("media engine: {error}")))
     }
@@ -289,6 +308,8 @@ struct Inner {
     /// The length of a fragmented MP4 with an empty header, added up from
     /// its fragments: the engine reports none for one.
     fragments_length: Option<Duration>,
+    /// The loopback proxy HLS with headers plays through.
+    proxy: Option<gpui_av_remux::HlsProxy>,
 }
 
 /// The presentation times of the first and last frame of a run of frames,
@@ -327,6 +348,7 @@ impl MfSession {
     fn open(
         url: &str,
         ranges: Option<UrlRanges>,
+        proxy: Option<gpui_av_remux::HlsProxy>,
         file: Option<std::path::PathBuf>,
         sink: EventSink,
         cx: &mut App,
@@ -415,6 +437,7 @@ impl MfSession {
             wanted_playing: None,
             http_error: None,
             fragments_length: None,
+            proxy,
         }));
         inner.borrow().sink.state(PlaybackState::Loading);
         let weak: Weak<RefCell<Inner>> = Rc::downgrade(&inner);
@@ -633,7 +656,11 @@ impl Inner {
             let read_error = self
                 .http_error
                 .as_ref()
-                .and_then(|last| last.lock().ok().and_then(|mut last| last.take()));
+                .and_then(|last| last.lock().ok().and_then(|mut last| last.take()))
+                .or_else(|| {
+                    let failure = self.proxy.as_ref()?.failure()?;
+                    Some(proxy_error(failure))
+                });
             self.sink.fail(
                 read_error.unwrap_or_else(|| error(event.param1, HRESULT(event.param2 as i32))),
             );
@@ -1111,6 +1138,27 @@ unsafe fn owned_string(string: windows::core::Result<PWSTR>) -> Option<String> {
     // SAFETY: the caller owns it, per the contract above.
     unsafe { CoTaskMemFree(Some(string.0 as *const _)) };
     text.filter(|text| !text.is_empty())
+}
+
+/// Whether a URL names an HLS playlist.
+fn names_playlist(url: &str) -> bool {
+    url.split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .to_ascii_lowercase()
+        .ends_with(".m3u8")
+}
+
+/// The error for what the HLS proxy's server answered.
+fn proxy_error(failure: gpui_av_remux::Failure) -> Error {
+    let kind = match failure.kind {
+        gpui_av_remux::FailureKind::Io(std::io::ErrorKind::NotFound) => ErrorKind::NotFound,
+        gpui_av_remux::FailureKind::Io(std::io::ErrorKind::PermissionDenied) => {
+            ErrorKind::Unauthorized
+        }
+        _ => ErrorKind::Network,
+    };
+    Error::new(kind, failure.message)
 }
 
 pub(crate) fn log(message: &str) {

@@ -103,6 +103,15 @@ rm "$OUT/tracks.srt"
 "${FF[@]}" $(picture 1280x720 30) "${TONE[@]}" -t 10 \
   "${AUDIO[@]}" "${H264[@]}" "${BT709[@]}" -shortest "$OUT/h264-1280x720-moov-at-end.mp4"
 
+# HLS of the 20 s clip, cut without re-encoding: MPEG-TS segments (what
+# most servers send) and fragmented MP4 ones, each in its own folder.
+mkdir -p "$OUT/hls-ts" "$OUT/hls-fmp4"
+"${FF[@]}" -i "$OUT/h264-1280x720.mp4" -c copy -f hls -hls_time 4 \
+  -hls_playlist_type vod -hls_segment_filename "$OUT/hls-ts/%d.ts" "$OUT/hls-ts/index.m3u8"
+"${FF[@]}" -i "$OUT/h264-1280x720.mp4" -c copy -f hls -hls_time 4 \
+  -hls_playlist_type vod -hls_segment_type fmp4 -hls_fmp4_init_filename init.mp4 \
+  -hls_segment_filename "$OUT/hls-fmp4/%d.m4s" "$OUT/hls-fmp4/index.m3u8"
+
 # Failures. A file cut off in the middle of its media data (faststart, so
 # the index is intact and playback starts):
 head -c 400000 "$OUT/h264-1280x720.mp4" > "$OUT/broken-truncated.mp4"

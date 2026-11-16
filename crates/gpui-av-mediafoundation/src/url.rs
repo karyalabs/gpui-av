@@ -89,6 +89,23 @@ impl Url {
         })
     }
 
+    /// The URL as text, the default port left out.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn to_text(&self) -> String {
+        let scheme = if self.secure { "https" } else { "http" };
+        let host = if self.host.contains(':') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
+        let default = if self.secure { 443 } else { 80 };
+        if self.port == default {
+            format!("{scheme}://{host}{}", self.path)
+        } else {
+            format!("{scheme}://{host}:{}{}", self.port, self.path)
+        }
+    }
+
     /// Whether the two have the same scheme, host and port: the source's
     /// headers go only to its own origin.
     pub fn same_origin(&self, other: &Self) -> bool {
@@ -142,6 +159,13 @@ mod tests {
         assert!(Url::parse("ftp://host/a").is_none());
         assert!(Url::parse("http:///a").is_none());
         assert!(Url::parse("http://host:port/a").is_none());
+        for text in [
+            "https://media.example:8920/a?b",
+            "http://[::1]/x",
+            "http://h/",
+        ] {
+            assert_eq!(Url::parse(text).unwrap().to_text(), text);
+        }
     }
 
     #[test]

@@ -16,6 +16,7 @@ fn main() {
 
 #[cfg(windows)]
 mod windows_test {
+    use std::collections::HashMap;
     use std::io::{BufRead, BufReader, Write};
     use std::net::{TcpListener, TcpStream};
     use std::path::{Path, PathBuf};
@@ -347,29 +348,105 @@ mod windows_test {
             report.check("read the clip", false, clip);
             return;
         };
-        let server = Server::start(bytes);
-        for (name, route, token, expect) in [
-            ("a URL with a token plays", "private", TOKEN, None),
+        let mut files = HashMap::from([("clip.mp4".to_string(), bytes)]);
+        let remuxed = hls_files(&clip.with_file_name("h264-1280x720-subtitles.mkv"));
+        if let Some(remuxed) = &remuxed {
+            files.extend(remuxed.clone());
+        }
+        let folders = ["hls-ts", "hls-fmp4"].map(|folder| {
+            let files = folder_files(&clip.with_file_name(folder), folder);
+            (folder, files)
+        });
+        for (_, found) in &folders {
+            if let Some(found) = found {
+                files.extend(found.clone());
+            }
+        }
+        let server = Server::start(files);
+        // (name, route, file, token, expected failure, whether it must pass)
+        let mut cases = vec![
+            (
+                "a URL with a token plays",
+                "private",
+                "clip.mp4",
+                Some(TOKEN),
+                None,
+                true,
+            ),
             (
                 "a wrong token fails as unauthorized",
                 "private",
-                "Bearer wrong",
+                "clip.mp4",
+                Some("Bearer wrong"),
                 Some(ErrorKind::Unauthorized),
+                true,
             ),
             (
                 "a redirect to another origin drops the token",
                 "hop",
-                TOKEN,
+                "clip.mp4",
+                Some(TOKEN),
                 None,
+                true,
             ),
             (
                 "a missing file fails as not found",
                 "missing",
-                TOKEN,
+                "clip.mp4",
+                Some(TOKEN),
                 Some(ErrorKind::NotFound),
+                true,
             ),
-        ] {
-            let source = Source::url(server.url(route)).header("Authorization", token);
+        ];
+        if folders[0].1.is_some() {
+            // MPEG-TS segments, what most servers send: these must play.
+            cases.extend([
+                (
+                    "HLS (TS) with a token plays",
+                    "private",
+                    "hls-ts/index.m3u8",
+                    Some(TOKEN),
+                    None,
+                    true,
+                ),
+                (
+                    "HLS (TS) through a redirect to another origin drops the token",
+                    "hop",
+                    "hls-ts/index.m3u8",
+                    Some(TOKEN),
+                    None,
+                    true,
+                ),
+                (
+                    "HLS (TS) with a wrong token fails as unauthorized",
+                    "private",
+                    "hls-ts/index.m3u8",
+                    Some("Bearer wrong"),
+                    Some(ErrorKind::Unauthorized),
+                    true,
+                ),
+            ]);
+        } else {
+            report.check("find the HLS (TS) clip", false, "no hls-ts folder");
+        }
+        // Fragmented MP4 segments, with and without the proxy: for the
+        // record, as the engine's HLS may not take them at all.
+        for file in ["hls-fmp4/index.m3u8", "hls/index.m3u8"] {
+            cases.push((
+                "HLS (fMP4) with a token",
+                "private",
+                file,
+                Some(TOKEN),
+                None,
+                true,
+            ));
+            cases.push(("HLS (fMP4) with no headers", "open", file, None, None, true));
+        }
+        for (name, route, file, token, expect, required) in cases {
+            let mut source = Source::url(server.url(route, file));
+            if let Some(token) = token {
+                source = source.header("Authorization", token);
+            }
             let opened = Instant::now();
             let player = cx.new(|cx| {
                 let mut player = VideoPlayer::with_backend(source, backend(), cx);
@@ -388,8 +465,15 @@ mod windows_test {
                 None => state == PlaybackState::Playing,
                 Some(kind) => failure_kind(&state) == Some(kind),
             };
-            report.check(name, ok, (&state, opened.elapsed()));
-            if expect.is_none() && ok {
+            if required {
+                report.check(name, ok, (&state, opened.elapsed()));
+            } else {
+                println!(
+                    "info {name} ({file}): {state:?} after {:?}",
+                    opened.elapsed()
+                );
+            }
+            if required && expect.is_none() && ok {
                 let target = Duration::from_secs(2);
                 player.update(cx, |player, _| player.seek(target));
                 wait(cx, 1500).await;
@@ -420,9 +504,42 @@ mod windows_test {
 
     const TOKEN: &str = "Bearer test-token";
 
-    /// A local server with the clip at `/private/clip.mp4` (needs the
-    /// token), `/hop/clip.mp4` (needs it, and redirects to `/open/` on the
-    /// other name for this machine) and `/open/clip.mp4` (refuses any
+    /// Every file in `folder`, named `prefix/NAME`.
+    fn folder_files(folder: &Path, prefix: &str) -> Option<HashMap<String, Vec<u8>>> {
+        let mut files = HashMap::new();
+        for entry in std::fs::read_dir(folder).ok()? {
+            let path = entry.ok()?.path();
+            let name = path.file_name()?.to_string_lossy().into_owned();
+            files.insert(format!("{prefix}/{name}"), std::fs::read(&path).ok()?);
+        }
+        Some(files)
+    }
+
+    /// HLS (fragmented MP4) of a Matroska clip, made by the remuxer, as
+    /// `hls/index.m3u8`, `hls/init.mp4` and `hls/N.m4s`.
+    fn hls_files(clip: &Path) -> Option<HashMap<String, Vec<u8>>> {
+        let file = std::fs::File::open(clip).ok()?;
+        let mut remuxer = gpui_av_remux::Remuxer::open(std::io::BufReader::new(file)).ok()?;
+        let mut files = HashMap::new();
+        files.insert(
+            "hls/index.m3u8".to_string(),
+            remuxer
+                .hls_playlist("init.mp4", |index| format!("{index}.m4s"))
+                .into_bytes(),
+        );
+        files.insert("hls/init.mp4".to_string(), remuxer.init_segment());
+        for index in 0..remuxer.segments().len() {
+            files.insert(
+                format!("hls/{index}.m4s"),
+                remuxer.media_segment(index).ok()?,
+            );
+        }
+        Some(files)
+    }
+
+    /// A local server with each file at `/private/NAME` (needs the token),
+    /// `/hop/NAME` (needs it, and redirects to `/open/NAME` on the other
+    /// name for this machine) and `/open/NAME` (refuses any
     /// `Authorization`, as a signed storage URL does). It logs each path
     /// and whether `Authorization` came with it.
     struct Server {
@@ -431,16 +548,16 @@ mod windows_test {
     }
 
     impl Server {
-        fn start(clip: Vec<u8>) -> Self {
+        fn start(files: HashMap<String, Vec<u8>>) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
             let port = listener.local_addr().expect("address").port();
             let log = Arc::new(Mutex::new(Vec::new()));
-            let (clip, served) = (Arc::new(clip), log.clone());
+            let (files, served) = (Arc::new(files), log.clone());
             std::thread::spawn(move || {
                 for stream in listener.incoming().flatten() {
-                    let (clip, log) = (clip.clone(), served.clone());
+                    let (files, log) = (files.clone(), served.clone());
                     std::thread::spawn(move || {
-                        if let Err(error) = serve(stream, port, &clip, &log) {
+                        if let Err(error) = serve(stream, port, &files, &log) {
                             println!("info the test server: {error}");
                         }
                     });
@@ -449,15 +566,15 @@ mod windows_test {
             Self { port, log }
         }
 
-        fn url(&self, route: &str) -> String {
-            format!("http://127.0.0.1:{}/{route}/clip.mp4", self.port)
+        fn url(&self, route: &str, name: &str) -> String {
+            format!("http://127.0.0.1:{}/{route}/{name}", self.port)
         }
     }
 
     fn serve(
         stream: TcpStream,
         port: u16,
-        clip: &[u8],
+        files: &HashMap<String, Vec<u8>>,
         log: &Mutex<Vec<(String, bool)>>,
     ) -> std::io::Result<()> {
         stream.set_read_timeout(Some(Duration::from_secs(30)))?;
@@ -489,6 +606,10 @@ mod windows_test {
                     }
                 }
             }
+            eprintln!(
+                "server: GET {path} range {range:?} token {}",
+                auth.is_some()
+            );
             if let Ok(mut log) = log.lock() {
                 log.push((path.clone(), auth.is_some()));
             }
@@ -499,7 +620,10 @@ mod windows_test {
                 )
             };
             let authorized = auth.as_deref() == Some(TOKEN);
-            let route = path.trim_start_matches('/').split('/').next().unwrap_or("");
+            let (route, name) = path
+                .trim_start_matches('/')
+                .split_once('/')
+                .unwrap_or(("", ""));
             match route {
                 "private" | "hop" | "missing" if !authorized => {
                     empty(&mut writer, "401 Unauthorized", "")?;
@@ -511,7 +635,7 @@ mod windows_test {
                     } else {
                         "127.0.0.1"
                     };
-                    let location = format!("Location: http://{other}:{port}/open/clip.mp4\r\n");
+                    let location = format!("Location: http://{other}:{port}/open/{name}\r\n");
                     empty(&mut writer, "302 Found", &location)?;
                     continue;
                 }
@@ -525,6 +649,10 @@ mod windows_test {
                     continue;
                 }
             }
+            let Some(clip) = files.get(name) else {
+                empty(&mut writer, "404 Not Found", "")?;
+                continue;
+            };
             let size = clip.len() as u64;
             let (start, end) = range
                 .as_deref()
@@ -538,9 +666,15 @@ mod windows_test {
             } else {
                 write!(writer, "HTTP/1.1 200 OK\r\n")?;
             }
+            let content_type = match name.rsplit('.').next() {
+                Some("m3u8") => "application/vnd.apple.mpegurl",
+                Some("ts") => "video/mp2t",
+                Some("mkv") => "video/x-matroska",
+                _ => "video/mp4",
+            };
             write!(
                 writer,
-                "Accept-Ranges: bytes\r\nContent-Type: video/mp4\r\nContent-Length: {}\r\n\r\n",
+                "Accept-Ranges: bytes\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n",
                 end - start + 1
             )?;
             writer.write_all(&clip[start as usize..=end as usize])?;

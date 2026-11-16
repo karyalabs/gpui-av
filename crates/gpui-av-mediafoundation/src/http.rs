@@ -11,15 +11,16 @@ use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
 
 use gpui_av::{Error, ErrorKind};
-use gpui_av_remux::{Fetched, RangeReader, RangeSource};
+use gpui_av_remux::{Fetch, Fetched, HttpResponse, RangeReader, RangeSource};
 use windows::Win32::Foundation::{E_FAIL, E_NOTIMPL, S_FALSE, S_OK, STG_E_ACCESSDENIED};
 use windows::Win32::Networking::WinHttp::{
     WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_ADDREQ_FLAG_ADD, WINHTTP_ADDREQ_FLAG_REPLACE,
     WINHTTP_DISABLE_REDIRECTS, WINHTTP_FLAG_SECURE, WINHTTP_OPEN_REQUEST_FLAGS,
-    WINHTTP_OPTION_DISABLE_FEATURE, WINHTTP_QUERY_CONTENT_RANGE, WINHTTP_QUERY_FLAG_NUMBER,
-    WINHTTP_QUERY_LOCATION, WINHTTP_QUERY_STATUS_CODE, WinHttpAddRequestHeaders,
-    WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders,
-    WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetOption,
+    WINHTTP_OPTION_DISABLE_FEATURE, WINHTTP_QUERY_CONTENT_RANGE, WINHTTP_QUERY_CONTENT_TYPE,
+    WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_LOCATION, WINHTTP_QUERY_STATUS_CODE,
+    WinHttpAddRequestHeaders, WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest,
+    WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest,
+    WinHttpSetOption,
 };
 use windows::Win32::System::Com::{
     ISequentialStream_Impl, IStream, IStream_Impl, LOCKTYPE, STATFLAG, STATSTG, STGC, STGM_READ,
@@ -40,9 +41,12 @@ pub(crate) type LastError = Arc<Mutex<Option<Error>>>;
 /// thread.
 struct Handle(NonNull<c_void>);
 
-// SAFETY: WinHTTP handles are not tied to the thread that opened them; each
-// is used by one thread at a time (behind the reader's mutex).
+// SAFETY: WinHTTP handles are not tied to the thread that opened them.
 unsafe impl Send for Handle {}
+// SAFETY: the only handle shared between threads is the session, which
+// WinHTTP lets many threads open requests on at once; request handles are
+// made and closed by one thread.
+unsafe impl Sync for Handle {}
 
 impl Handle {
     fn new(raw: *mut c_void) -> io::Result<Self> {
@@ -64,11 +68,13 @@ impl Drop for Handle {
 struct Response {
     status: u32,
     location: Option<String>,
+    content_type: Option<String>,
     content_range: Option<String>,
     body: Vec<u8>,
 }
 
-/// Range requests for one URL, with its headers.
+/// Requests for one source, with its headers on its origin: range requests
+/// of its URL for the byte stream, and any URL for the HLS proxy.
 pub(crate) struct UrlRanges {
     session: Handle,
     url: Url,
@@ -101,9 +107,43 @@ impl UrlRanges {
         })
     }
 
-    /// One GET of `url` for bytes `start..=end`, without following a
-    /// redirect.
-    fn request(&self, url: &Url, start: u64, end: u64, with_headers: bool) -> io::Result<Response> {
+    /// GETs `url`, following redirects by hand: the headers go only to
+    /// the source's origin. Returns the answer and the URL that gave it.
+    fn get(
+        &self,
+        mut url: Url,
+        range: Option<(u64, Option<u64>)>,
+        limit: Option<u64>,
+    ) -> io::Result<(Response, Url)> {
+        let mut redirects = 0;
+        loop {
+            let response = self.request(&url, range, url.same_origin(&self.url), limit)?;
+            if !matches!(response.status, 301 | 302 | 303 | 307 | 308) {
+                return Ok((response, url));
+            }
+            redirects += 1;
+            let next = response
+                .location
+                .as_deref()
+                .and_then(|location| url.resolve(location));
+            match next {
+                Some(next) if redirects <= MAX_REDIRECTS => url = next,
+                Some(_) => return Err(io::Error::other("too many redirects")),
+                None => return Err(io::Error::other("a redirect with no usable Location")),
+            }
+        }
+    }
+
+    /// One GET of `url` (bytes `start` to `end` with a range), without
+    /// following a redirect. With `limit`, reads at most one byte more
+    /// than that of the body.
+    fn request(
+        &self,
+        url: &Url,
+        range: Option<(u64, Option<u64>)>,
+        with_headers: bool,
+        limit: Option<u64>,
+    ) -> io::Result<Response> {
         let host = wide(&url.host);
         let path = wide(&url.path);
         let flags = if url.secure {
@@ -111,7 +151,11 @@ impl UrlRanges {
         } else {
             WINHTTP_OPEN_REQUEST_FLAGS(0)
         };
-        let mut lines = format!("Range: bytes={start}-{end}\r\n");
+        let mut lines = match range {
+            Some((start, Some(end))) => format!("Range: bytes={start}-{end}\r\n"),
+            Some((start, None)) => format!("Range: bytes={start}-\r\n"),
+            None => String::new(),
+        };
         if with_headers {
             lines += &header_lines(&self.headers);
         }
@@ -139,11 +183,14 @@ impl UrlRanges {
                 WINHTTP_OPTION_DISABLE_FEATURE,
                 Some(&WINHTTP_DISABLE_REDIRECTS.to_ne_bytes()),
             )?;
-            WinHttpAddRequestHeaders(
-                request.0.as_ptr(),
-                &lines,
-                WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE,
-            )?;
+            // An empty slice's pointer dangles, and WinHTTP reads it anyway.
+            if !lines.is_empty() {
+                WinHttpAddRequestHeaders(
+                    request.0.as_ptr(),
+                    &lines,
+                    WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE,
+                )?;
+            }
             WinHttpSendRequest(request.0.as_ptr(), None, None, 0, 0, 0)?;
             WinHttpReceiveResponse(request.0.as_ptr(), std::ptr::null_mut())?;
             let mut status = 0u32;
@@ -158,13 +205,13 @@ impl UrlRanges {
             )?;
             let location = query_text(&request, WINHTTP_QUERY_LOCATION);
             let content_range = query_text(&request, WINHTTP_QUERY_CONTENT_RANGE);
+            let content_type = query_text(&request, WINHTTP_QUERY_CONTENT_TYPE);
             let mut body = Vec::new();
             if (200..300).contains(&status) {
-                let wanted = end - start + 1;
                 let mut chunk = vec![0u8; 64 * 1024];
                 // A server that ignores the range sends the whole file;
                 // reading one byte more than asked for is enough to tell.
-                while (body.len() as u64) <= wanted {
+                while limit.is_none_or(|limit| (body.len() as u64) <= limit) {
                     let mut read = 0u32;
                     WinHttpReadData(
                         request.0.as_ptr(),
@@ -181,6 +228,7 @@ impl UrlRanges {
             Ok(Response {
                 status,
                 location,
+                content_type,
                 content_range,
                 body,
             })
@@ -191,24 +239,7 @@ impl UrlRanges {
 impl RangeSource for UrlRanges {
     fn fetch(&mut self, start: u64, length: u64) -> io::Result<Fetched> {
         let end = start + length.max(1) - 1;
-        let mut url = self.url.clone();
-        let mut redirects = 0;
-        let response = loop {
-            let response = self.request(&url, start, end, url.same_origin(&self.url))?;
-            if !matches!(response.status, 301 | 302 | 303 | 307 | 308) {
-                break response;
-            }
-            redirects += 1;
-            let next = response
-                .location
-                .as_deref()
-                .and_then(|location| url.resolve(location));
-            match next {
-                Some(next) if redirects <= MAX_REDIRECTS => url = next,
-                Some(_) => return Err(io::Error::other("too many redirects")),
-                None => return Err(io::Error::other("a redirect with no usable Location")),
-            }
-        };
+        let (response, _) = self.get(self.url.clone(), Some((start, Some(end))), Some(length))?;
         let Response {
             status,
             content_range,
@@ -258,6 +289,27 @@ impl RangeSource for UrlRanges {
         Ok(Fetched {
             bytes: body,
             length,
+        })
+    }
+}
+
+/// HLS through the loopback proxy: every playlist, key and segment with
+/// the source's headers on its origin.
+impl Fetch for UrlRanges {
+    fn get(&self, url: &str, range: Option<(u64, Option<u64>)>) -> io::Result<HttpResponse> {
+        let parsed = Url::parse(url).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("not an http URL: {url}"),
+            )
+        })?;
+        let (response, answered) = UrlRanges::get(self, parsed, range, None)?;
+        Ok(HttpResponse {
+            status: response.status as u16,
+            content_type: response.content_type,
+            content_range: response.content_range,
+            url: answered.to_text(),
+            body: response.body,
         })
     }
 }
